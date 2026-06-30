@@ -1894,7 +1894,12 @@ impl LoginConfigHandler {
         self.force_relay =
             config::option2bool("force-always-relay", &self.get_option("force-always-relay"))
                 || force_relay
-                || use_ws()
+                // [ICE experiment] Normally WebSocket (e.g. behind Cloudflare) implies relay
+                // because the proxy hides each peer's transport address. With ICE enabled we
+                // discover a STUN srflx candidate and punch directly, so don't force relay
+                // here — otherwise the UDP punch socket is never created and no candidate is
+                // gathered/advertised. Relay still applies as a fallback if the punch fails.
+                || (use_ws() && !crate::ice::enabled())
                 || Config::is_proxy();
         if let Some((real_id, server, key)) = &self.other_server {
             let other_server_key = self.get_option("other-server-key");
