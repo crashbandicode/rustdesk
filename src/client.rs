@@ -319,12 +319,17 @@ impl Client {
         if crate::get_udp_punch_enabled() && !interface.is_force_relay() {
             if let Ok((socket, addr)) = new_direct_udp_for(&rendezvous_server).await {
                 let udp_port = Arc::new(Mutex::new(0));
-                let up_cloned = udp_port.clone();
-                let socket_cloned = socket.clone();
-                let func = async move {
-                    allow_err!(test_udp_uat(socket_cloned, addr, up_cloned, stop_udp_rx).await);
-                };
-                tokio::spawn(func);
+                // [ICE experiment] over WebSocket the UDP NAT test to hbbs is dropped by
+                // the proxy and would race the STUN gather in _start_inner; skip it and
+                // let _start_inner discover the srflx candidate on this socket instead.
+                if !(crate::ice::enabled() && use_ws()) {
+                    let up_cloned = udp_port.clone();
+                    let socket_cloned = socket.clone();
+                    let func = async move {
+                        allow_err!(test_udp_uat(socket_cloned, addr, up_cloned, stop_udp_rx).await);
+                    };
+                    tokio::spawn(func);
+                }
                 (Some(socket), Some(udp_port))
             } else {
                 (None, None)
@@ -457,7 +462,24 @@ impl Client {
         } else {
             (None, None)
         };
-        let udp_nat_port = udp.1.map(|x| *x.lock().unwrap()).unwrap_or(0);
+        let mut udp_nat_port = udp.1.map(|x| *x.lock().unwrap()).unwrap_or(0);
+        // [ICE experiment] When reaching the rendezvous over WebSocket (e.g. behind
+        // Cloudflare) the UDP NAT test cannot work, so discover our server-reflexive
+        // candidate from a public STUN server on the very socket we will punch from and
+        // advertise it, so the controlled peer can reach us directly.
+        let mut ice_srflx = String::new();
+        if crate::ice::enabled() && use_ws() {
+            if let Some(s) = udp.0.as_ref() {
+                match crate::ice::gather_srflx_on(s, &crate::ice::configured_stun(), 3000).await {
+                    Ok(srflx) => {
+                        udp_nat_port = srflx.port();
+                        ice_srflx = srflx.to_string();
+                        log::info!("ICE: advertising srflx candidate {}", ice_srflx);
+                    }
+                    Err(e) => log::info!("ICE: srflx discovery failed: {}", e),
+                }
+            }
+        }
         let punch_type = if udp_nat_port > 0 { "UDP" } else { "TCP" };
         msg_out.set_punch_hole_request(PunchHoleRequest {
             id: peer.to_owned(),
@@ -469,6 +491,7 @@ impl Client {
             udp_port: udp_nat_port as _,
             force_relay: interface.is_force_relay(),
             socket_addr_v6: ipv6.1.unwrap_or_default(),
+            ice_srflx,
             ..Default::default()
         });
         for i in 1..=3 {
@@ -511,9 +534,20 @@ impl Client {
                             signed_id_pk = ph.pk.into();
                             relay_server = ph.relay_server;
                             peer_addr = AddrMangle::decode(&ph.socket_addr);
+                            // [ICE experiment] prefer the peer's STUN srflx candidate when
+                            // present: it is directly reachable even though the rendezvous
+                            // itself is proxied over WebSocket.
+                            let mut ice_is_udp = false;
+                            if crate::ice::enabled() && !ph.ice_srflx.is_empty() {
+                                if let Ok(a) = ph.ice_srflx.parse::<SocketAddr>() {
+                                    peer_addr = a;
+                                    ice_is_udp = true;
+                                    log::info!("ICE: punching to peer srflx {}", peer_addr);
+                                }
+                            }
                             feedback = ph.feedback;
                             let s = udp.0.take();
-                            if ph.is_udp && s.is_some() {
+                            if (ph.is_udp || ice_is_udp) && s.is_some() {
                                 if let Some(s) = s {
                                     allow_err!(s.connect(peer_addr).await);
                                     udp.0 = Some(s);

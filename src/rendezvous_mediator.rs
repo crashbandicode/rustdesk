@@ -656,6 +656,26 @@ impl RendezvousMediator {
             return Ok(());
         }
         let peer_addr_v6 = hbb_common::AddrMangle::decode(&ph.socket_addr_v6);
+        // [ICE experiment] If the initiator advertised a STUN srflx candidate, punch a
+        // direct UDP path to it (and report our own srflx back through the proxied
+        // rendezvous) instead of forcing relay. Falls back to the normal path on failure.
+        if crate::ice::enabled() && !ph.ice_srflx.is_empty() && !ph.force_relay {
+            if let Ok(peer_srflx) = ph.ice_srflx.parse::<SocketAddr>() {
+                let meta = connection_meta(
+                    ph.control_permissions.clone().into_option(),
+                    ph.controlled_context.clone().into_option(),
+                );
+                match self
+                    .punch_udp_hole_ice(peer_srflx, ph.socket_addr.clone(), server.clone(), meta)
+                    .await
+                {
+                    Ok(()) => return Ok(()),
+                    Err(e) => {
+                        log::info!("ICE punch to {} failed: {}, falling back to relay", peer_srflx, e)
+                    }
+                }
+            }
+        }
         let relay = use_ws() || Config::is_proxy() || ph.force_relay;
         let mut socket_addr_v6 = Default::default();
         let meta = connection_meta(
@@ -743,6 +763,46 @@ impl RendezvousMediator {
         });
         udp_nat_listen(socket_cloned.clone(), peer_addr, peer_addr, server, meta).await?;
         Ok(())
+    }
+
+    // [ICE experiment] Punch directly to the initiator's STUN srflx candidate. We gather
+    // our own srflx on the punch socket, report it back to the initiator over the
+    // (proxied) rendezvous so it can punch toward us, then punch + accept the connection.
+    async fn punch_udp_hole_ice(
+        &self,
+        peer_srflx: SocketAddr,
+        initiator_socket_addr: bytes::Bytes,
+        server: ServerPtr,
+        meta: ConnectionMeta,
+    ) -> ResultType<()> {
+        let local_addr = Config::get_any_listen_addr(true);
+        let socket = Arc::new(tokio::net::UdpSocket::bind(local_addr).await?);
+        let my_srflx =
+            crate::ice::gather_srflx_on(&socket, &crate::ice::configured_stun(), 3000).await?;
+        log::info!(
+            "ICE: controlled srflx {}, punching to initiator srflx {}",
+            my_srflx,
+            peer_srflx
+        );
+
+        use hbb_common::protobuf::Enum;
+        let nat_type = NatType::from_i32(Config::get_nat_type()).unwrap_or(NatType::UNKNOWN_NAT);
+        let msg_punch = PunchHoleSent {
+            socket_addr: initiator_socket_addr,
+            id: Config::get_id(),
+            relay_server: self.get_relay_server(String::new()),
+            nat_type: nat_type.into(),
+            version: crate::VERSION.to_owned(),
+            ice_srflx: my_srflx.to_string(),
+            ..Default::default()
+        };
+        let mut msg_out = Message::new();
+        msg_out.set_punch_hole_sent(msg_punch);
+        // Report our candidate to the initiator via the rendezvous (relayed by hbbs).
+        let mut signaling = connect_tcp(&*self.host, CONNECT_TIMEOUT).await?;
+        signaling.send(&msg_out).await?;
+
+        udp_nat_listen(socket, peer_srflx, peer_srflx, server, meta).await
     }
 
     async fn register_pk(&mut self, socket: Sink<'_>) -> ResultType<()> {
