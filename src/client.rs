@@ -487,7 +487,7 @@ impl Client {
                         // from) too, so a peer on the same network can reach us directly
                         // over the LAN instead of relaying.
                         let local_port = s.local_addr().map(|a| a.port()).unwrap_or(0);
-                        let host = crate::ice::host_candidate(local_port);
+                        let host = crate::ice::host_candidate(local_port).await;
                         ice_srflx = crate::ice::encode_candidates(
                             host.as_deref(),
                             Some(&srflx.to_string()),
