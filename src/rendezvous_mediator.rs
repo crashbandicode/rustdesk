@@ -779,6 +779,17 @@ impl RendezvousMediator {
         let socket = Arc::new(tokio::net::UdpSocket::bind(local_addr).await?);
         let my_srflx =
             crate::ice::gather_srflx_on(&socket, &crate::ice::configured_stun(), 3000).await?;
+        // [ICE experiment] If both peers resolve to the same public IP they sit behind the
+        // same NAT (e.g. the phone on the same Wi-Fi as the PC). Punching to each other's
+        // server-reflexive (public) candidate then needs NAT hairpinning, which most
+        // consumer routers don't support and which would hang with no media path. Bail so
+        // handle_punch_hole falls back to relay (which pairs reliably) instead of spinning.
+        if my_srflx.ip() == peer_srflx.ip() {
+            bail!(
+                "ICE peers share public IP {} (same NAT); relaying instead of hairpin punch",
+                my_srflx.ip()
+            );
+        }
         log::info!(
             "ICE: controlled srflx {}, punching to initiator srflx {}",
             my_srflx,
@@ -802,7 +813,17 @@ impl RendezvousMediator {
         let mut signaling = connect_tcp(&*self.host, CONNECT_TIMEOUT).await?;
         signaling.send(&msg_out).await?;
 
-        udp_nat_listen(socket, peer_srflx, peer_srflx, server, meta).await
+        // Bound the punch: if traversal fails (e.g. strict/symmetric NAT) don't hang the
+        // session forever — time out so handle_punch_hole falls back to relay.
+        match hbb_common::timeout(
+            10_000,
+            udp_nat_listen(socket, peer_srflx, peer_srflx, server, meta),
+        )
+        .await
+        {
+            Ok(r) => r,
+            Err(_) => bail!("ICE udp punch timed out; falling back to relay"),
+        }
     }
 
     async fn register_pk(&mut self, socket: Sink<'_>) -> ResultType<()> {
