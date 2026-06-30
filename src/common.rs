@@ -1090,6 +1090,14 @@ pub fn is_public(url: &str) -> bool {
 }
 
 pub fn get_udp_punch_enabled() -> bool {
+    // [ICE experiment] The ICE/STUN path reuses the UDP punch socket to discover and
+    // punch to a server-reflexive candidate, so the socket must always be created on
+    // this build. The stock default is "N" for self-hosted (non-public) servers and
+    // depends on a UI toggle that is easy to miss (and impractical to set on Android),
+    // so force it on whenever ICE is enabled.
+    if crate::ice::enabled() {
+        return true;
+    }
     config::option2bool(
         keys::OPTION_ENABLE_UDP_PUNCH,
         &get_local_option(keys::OPTION_ENABLE_UDP_PUNCH),
