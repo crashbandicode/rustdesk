@@ -171,7 +171,9 @@ jobs:
 
       - name: Build rustdesk
         run: |
-          python3 .\build.py --portable --flutter --skip-portable-pack --hwcodec --vram
+          # No --skip-portable-pack: run the portable packer so we also get a single
+          # self-contained installer exe (rustdesk-<version>-install.exe) for releases.
+          python3 .\build.py --portable --flutter --hwcodec --vram
           mv ./flutter/build/windows/x64/runner/Release ./rustdesk
 
       - name: Upload Windows portable folder
@@ -179,6 +181,12 @@ jobs:
         with:
           name: rustdesk-ice-windows-x86_64
           path: rustdesk
+
+      - name: Upload Windows installer
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: rustdesk-ice-windows-installer
+          path: rustdesk-${{ env.VERSION }}-install.exe
 
   build-android:
     name: build android arm64 (apk)
