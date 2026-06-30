@@ -352,6 +352,16 @@ impl Client {
         if udp.0.is_none() {
             return fut.await;
         }
+        // [ICE experiment] Over WebSocket (e.g. behind Cloudflare) the second,
+        // candidate-less "TCP punch" attempt cannot establish a direct path: the peer
+        // address it learns is the proxy's, so it only ever relays. Worse, it skips the
+        // STUN gather and therefore reaches the controlled peer *before* our ICE
+        // candidate does, making that peer commit to relay before it can punch. Run only
+        // the candidate-bearing attempt in that case; it still falls back to relay
+        // internally if the direct punch fails.
+        if crate::ice::enabled() && use_ws() {
+            return fut.await;
+        }
         let mut connect_futures = Vec::new();
         connect_futures.push(fut.boxed());
         let fut = Self::_start_inner(
