@@ -790,7 +790,7 @@ impl RendezvousMediator {
         let my_srflx =
             crate::ice::gather_srflx_on(&socket, &crate::ice::configured_stun(), 3000).await?;
         let local_port = socket.local_addr().map(|a| a.port()).unwrap_or(0);
-        let my_host = crate::ice::host_candidate(local_port);
+        let my_host = crate::ice::host_candidate(local_port).await;
 
         let same_nat = peer.srflx.map(|s| s.ip() == my_srflx.ip()).unwrap_or(false);
         let (target, my_cand) = if same_nat {

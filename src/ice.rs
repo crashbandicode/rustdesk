@@ -207,9 +207,10 @@ pub struct Candidates {
     pub srflx: Option<SocketAddr>,
 }
 
-/// Our primary LAN IP, as recorded when connecting to the rendezvous server
-/// (`local-ip-addr`). Loopback / unspecified are rejected.
-pub fn local_ip() -> Option<std::net::IpAddr> {
+/// Our primary LAN IP, as recorded in config when connecting to the rendezvous
+/// server (`local-ip-addr`). Loopback / unspecified are rejected. Used only as a
+/// fallback — see [`lan_ip`].
+pub fn local_ip_from_config() -> Option<std::net::IpAddr> {
     let s = hbb_common::config::Config::get_option("local-ip-addr");
     if s.is_empty() {
         return None;
@@ -219,12 +220,31 @@ pub fn local_ip() -> Option<std::net::IpAddr> {
         .filter(|ip| !ip.is_loopback() && !ip.is_unspecified())
 }
 
+/// Determine our primary LAN IP from the OS routing table. A UDP `connect` to a
+/// public IP sends no packets, it just makes the kernel select the egress
+/// interface so `local_addr()` reports that interface's address. This works even
+/// when `local-ip-addr` was never recorded (e.g. a service connecting over
+/// WebSocket), and falls back to the recorded config value if it can't.
+pub async fn lan_ip() -> Option<std::net::IpAddr> {
+    if let Ok(s) = UdpSocket::bind("0.0.0.0:0").await {
+        if s.connect("8.8.8.8:80").await.is_ok() {
+            if let Ok(a) = s.local_addr() {
+                let ip = a.ip();
+                if !ip.is_loopback() && !ip.is_unspecified() {
+                    return Some(ip);
+                }
+            }
+        }
+    }
+    local_ip_from_config()
+}
+
 /// Build our host candidate string (LAN IP + the local port we punch from).
-pub fn host_candidate(local_port: u16) -> Option<String> {
+pub async fn host_candidate(local_port: u16) -> Option<String> {
     if local_port == 0 {
         return None;
     }
-    local_ip().map(|ip| SocketAddr::new(ip, local_port).to_string())
+    lan_ip().await.map(|ip| SocketAddr::new(ip, local_port).to_string())
 }
 
 /// Encode host + srflx candidates into the single signaling string.
