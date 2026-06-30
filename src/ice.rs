@@ -195,9 +195,102 @@ pub async fn detect_endpoint_independent_mapping(
     Ok((a, b, eim))
 }
 
+/// A peer's exchanged ICE candidates. Encoded compactly into the single
+/// `ice_srflx` signaling string (which our patched rendezvous relays verbatim,
+/// so no server change is needed) as `h=<ip:port>;s=<ip:port>`. For backward
+/// compatibility a bare `ip:port` with no tags is read as the srflx candidate.
+#[derive(Default, Debug, Clone)]
+pub struct Candidates {
+    /// Host candidate: our LAN address (best for same-network peers).
+    pub host: Option<SocketAddr>,
+    /// Server-reflexive candidate: our public mapping via STUN.
+    pub srflx: Option<SocketAddr>,
+}
+
+/// Our primary LAN IP, as recorded when connecting to the rendezvous server
+/// (`local-ip-addr`). Loopback / unspecified are rejected.
+pub fn local_ip() -> Option<std::net::IpAddr> {
+    let s = hbb_common::config::Config::get_option("local-ip-addr");
+    if s.is_empty() {
+        return None;
+    }
+    s.parse::<std::net::IpAddr>()
+        .ok()
+        .filter(|ip| !ip.is_loopback() && !ip.is_unspecified())
+}
+
+/// Build our host candidate string (LAN IP + the local port we punch from).
+pub fn host_candidate(local_port: u16) -> Option<String> {
+    if local_port == 0 {
+        return None;
+    }
+    local_ip().map(|ip| SocketAddr::new(ip, local_port).to_string())
+}
+
+/// Encode host + srflx candidates into the single signaling string.
+pub fn encode_candidates(host: Option<&str>, srflx: Option<&str>) -> String {
+    let mut parts = Vec::new();
+    if let Some(h) = host {
+        if !h.is_empty() {
+            parts.push(format!("h={}", h));
+        }
+    }
+    if let Some(s) = srflx {
+        if !s.is_empty() {
+            parts.push(format!("s={}", s));
+        }
+    }
+    parts.join(";")
+}
+
+/// Parse the signaling string produced by [`encode_candidates`]. A bare
+/// `ip:port` (older builds) is interpreted as the srflx candidate.
+pub fn parse_candidates(s: &str) -> Candidates {
+    let mut c = Candidates::default();
+    if s.is_empty() {
+        return c;
+    }
+    if !s.contains('=') {
+        c.srflx = s.parse().ok();
+        return c;
+    }
+    for part in s.split(';') {
+        if let Some(v) = part.strip_prefix("h=") {
+            c.host = v.parse().ok();
+        } else if let Some(v) = part.strip_prefix("s=") {
+            c.srflx = v.parse().ok();
+        }
+    }
+    c
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn candidate_roundtrip() {
+        let enc = encode_candidates(Some("192.168.0.5:41000"), Some("203.0.113.7:50000"));
+        let c = parse_candidates(&enc);
+        assert_eq!(c.host, Some("192.168.0.5:41000".parse().unwrap()));
+        assert_eq!(c.srflx, Some("203.0.113.7:50000".parse().unwrap()));
+    }
+
+    #[test]
+    fn candidate_bare_is_srflx() {
+        let c = parse_candidates("203.0.113.7:50000");
+        assert!(c.host.is_none());
+        assert_eq!(c.srflx, Some("203.0.113.7:50000".parse().unwrap()));
+    }
+
+    #[test]
+    fn candidate_srflx_only() {
+        let enc = encode_candidates(None, Some("203.0.113.7:50000"));
+        assert_eq!(enc, "s=203.0.113.7:50000");
+        let c = parse_candidates(&enc);
+        assert!(c.host.is_none());
+        assert_eq!(c.srflx, Some("203.0.113.7:50000".parse().unwrap()));
+    }
 
     // RFC 5769 section 2.1/2.2 sample: XOR-MAPPED-ADDRESS decodes to
     // 192.0.2.1:32853.
