@@ -197,12 +197,15 @@ pub async fn detect_endpoint_independent_mapping(
 
 /// A peer's exchanged ICE candidates. Encoded compactly into the single
 /// `ice_srflx` signaling string (which our patched rendezvous relays verbatim,
-/// so no server change is needed) as `h=<ip:port>;s=<ip:port>`. For backward
-/// compatibility a bare `ip:port` with no tags is read as the srflx candidate.
+/// so no server change is needed) as `h=<ip:port>,<ip:port>;s=<ip:port>`. The
+/// `h=` list may carry several host candidates (one per local network: LAN, VPN
+/// overlay, etc.). For backward compatibility a bare `ip:port` with no tags is
+/// read as the srflx candidate.
 #[derive(Default, Debug, Clone)]
 pub struct Candidates {
-    /// Host candidate: our LAN address (best for same-network peers).
-    pub host: Option<SocketAddr>,
+    /// Host candidates: our local-interface addresses (best for peers we share
+    /// a network with — LAN or a VPN overlay).
+    pub hosts: Vec<SocketAddr>,
     /// Server-reflexive candidate: our public mapping via STUN.
     pub srflx: Option<SocketAddr>,
 }
@@ -222,9 +225,8 @@ pub fn local_ip_from_config() -> Option<std::net::IpAddr> {
 
 /// Determine our primary LAN IP from the OS routing table. A UDP `connect` to a
 /// public IP sends no packets, it just makes the kernel select the egress
-/// interface so `local_addr()` reports that interface's address. This works even
-/// when `local-ip-addr` was never recorded (e.g. a service connecting over
-/// WebSocket), and falls back to the recorded config value if it can't.
+/// interface so `local_addr()` reports that interface's address. Falls back to
+/// the recorded config value if it can't.
 pub async fn lan_ip() -> Option<std::net::IpAddr> {
     if let Ok(s) = UdpSocket::bind("0.0.0.0:0").await {
         if s.connect("8.8.8.8:80").await.is_ok() {
@@ -239,21 +241,69 @@ pub async fn lan_ip() -> Option<std::net::IpAddr> {
     local_ip_from_config()
 }
 
-/// Build our host candidate string (LAN IP + the local port we punch from).
-pub async fn host_candidate(local_port: u16) -> Option<String> {
-    if local_port == 0 {
-        return None;
+/// All local private IPv4 interface addresses (LAN, VPN overlay, etc.),
+/// excluding loopback / unspecified / link-local. Advertised as host candidates
+/// so a peer that shares *any* of our networks can reach us directly — including
+/// when one side runs a full-tunnel VPN that hides the physical LAN from the
+/// default route.
+pub fn local_ipv4s() -> Vec<std::net::Ipv4Addr> {
+    let mut out = Vec::new();
+    #[cfg(not(target_os = "ios"))]
+    for itf in default_net::get_interfaces() {
+        for n in &itf.ipv4 {
+            let ip = n.addr;
+            if !ip.is_loopback() && !ip.is_unspecified() && !ip.is_link_local() {
+                out.push(ip);
+            }
+        }
     }
-    lan_ip().await.map(|ip| SocketAddr::new(ip, local_port).to_string())
+    out
+}
+
+/// Build our host candidate strings (every local IPv4 + the local port we punch
+/// from). Falls back to the routing-table / config LAN IP if enumeration yields
+/// nothing (e.g. on iOS).
+pub async fn host_candidates(local_port: u16) -> Vec<String> {
+    if local_port == 0 {
+        return Vec::new();
+    }
+    let mut ips = local_ipv4s();
+    if ips.is_empty() {
+        if let Some(std::net::IpAddr::V4(v4)) = lan_ip().await {
+            ips.push(v4);
+        }
+    }
+    ips.into_iter()
+        .map(|ip| SocketAddr::new(ip.into(), local_port).to_string())
+        .collect()
+}
+
+/// Local source IP the OS would use to reach `peer` (consults the routing table;
+/// a connected UDP socket sends nothing). Directly-connected LAN subnets outrank
+/// a VPN default route, so for a LAN peer this returns the real LAN IP even when
+/// a full-tunnel VPN is active.
+pub fn source_ip_for(peer: std::net::IpAddr) -> Option<std::net::IpAddr> {
+    let s = std::net::UdpSocket::bind("0.0.0.0:0").ok()?;
+    s.connect(SocketAddr::new(peer, 9)).ok()?;
+    s.local_addr()
+        .ok()
+        .map(|a| a.ip())
+        .filter(|ip| !ip.is_loopback() && !ip.is_unspecified())
+}
+
+/// Whether two IPv4 addresses look like they share a directly-reachable private
+/// LAN (same /24). Used together with [`source_ip_for`] to confirm a peer host
+/// candidate is reachable over a local network rather than routed away.
+pub fn same_lan_v4(a: std::net::Ipv4Addr, b: std::net::Ipv4Addr) -> bool {
+    a.is_private() && b.is_private() && a.octets()[..3] == b.octets()[..3]
 }
 
 /// Encode host + srflx candidates into the single signaling string.
-pub fn encode_candidates(host: Option<&str>, srflx: Option<&str>) -> String {
+pub fn encode_candidates(hosts: &[String], srflx: Option<&str>) -> String {
     let mut parts = Vec::new();
-    if let Some(h) = host {
-        if !h.is_empty() {
-            parts.push(format!("h={}", h));
-        }
+    let hosts: Vec<&str> = hosts.iter().map(|s| s.as_str()).filter(|s| !s.is_empty()).collect();
+    if !hosts.is_empty() {
+        parts.push(format!("h={}", hosts.join(",")));
     }
     if let Some(s) = srflx {
         if !s.is_empty() {
@@ -276,7 +326,11 @@ pub fn parse_candidates(s: &str) -> Candidates {
     }
     for part in s.split(';') {
         if let Some(v) = part.strip_prefix("h=") {
-            c.host = v.parse().ok();
+            for h in v.split(',') {
+                if let Ok(a) = h.parse() {
+                    c.hosts.push(a);
+                }
+            }
         } else if let Some(v) = part.strip_prefix("s=") {
             c.srflx = v.parse().ok();
         }
@@ -290,26 +344,53 @@ mod tests {
 
     #[test]
     fn candidate_roundtrip() {
-        let enc = encode_candidates(Some("192.168.0.5:41000"), Some("203.0.113.7:50000"));
+        let hosts = vec![
+            "192.168.0.5:41000".to_string(),
+            "10.8.0.2:41000".to_string(),
+        ];
+        let enc = encode_candidates(&hosts, Some("203.0.113.7:50000"));
         let c = parse_candidates(&enc);
-        assert_eq!(c.host, Some("192.168.0.5:41000".parse().unwrap()));
+        assert_eq!(
+            c.hosts,
+            vec![
+                "192.168.0.5:41000".parse().unwrap(),
+                "10.8.0.2:41000".parse().unwrap()
+            ]
+        );
         assert_eq!(c.srflx, Some("203.0.113.7:50000".parse().unwrap()));
     }
 
     #[test]
     fn candidate_bare_is_srflx() {
         let c = parse_candidates("203.0.113.7:50000");
-        assert!(c.host.is_none());
+        assert!(c.hosts.is_empty());
         assert_eq!(c.srflx, Some("203.0.113.7:50000".parse().unwrap()));
     }
 
     #[test]
     fn candidate_srflx_only() {
-        let enc = encode_candidates(None, Some("203.0.113.7:50000"));
+        let enc = encode_candidates(&[], Some("203.0.113.7:50000"));
         assert_eq!(enc, "s=203.0.113.7:50000");
         let c = parse_candidates(&enc);
-        assert!(c.host.is_none());
+        assert!(c.hosts.is_empty());
         assert_eq!(c.srflx, Some("203.0.113.7:50000".parse().unwrap()));
+    }
+
+    #[test]
+    fn same_lan_v4_works() {
+        use std::net::Ipv4Addr;
+        assert!(same_lan_v4(
+            Ipv4Addr::new(192, 168, 0, 191),
+            Ipv4Addr::new(192, 168, 0, 141)
+        ));
+        assert!(!same_lan_v4(
+            Ipv4Addr::new(192, 168, 0, 191),
+            Ipv4Addr::new(192, 168, 1, 141)
+        ));
+        assert!(!same_lan_v4(
+            Ipv4Addr::new(8, 8, 8, 8),
+            Ipv4Addr::new(8, 8, 8, 9)
+        ));
     }
 
     // RFC 5769 section 2.1/2.2 sample: XOR-MAPPED-ADDRESS decodes to
