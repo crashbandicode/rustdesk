@@ -52,13 +52,18 @@ pub const OPTION_ENABLE_ICE: &str = "enable-ice";
 /// Config option name for overriding the STUN server used for srflx discovery.
 pub const OPTION_STUN_SERVER: &str = "custom-stun-server";
 
-/// Whether the experimental ICE traversal path is enabled. Default off so stock
-/// behaviour (direct punch / relay) is completely unchanged unless opted in.
-/// Note: we do NOT use `option2bool` here because it defaults unknown/empty
-/// options to true; this experiment must default to false.
+/// Whether the experimental ICE traversal path is enabled.
+///
+/// This is the dedicated `experiment/ice-candidate-traversal` build, so ICE
+/// defaults **on** when the option is unset — that lets the Android APK (where
+/// editing the config file is impractical) exercise the path with no extra
+/// setup. It can still be explicitly turned off via config
+/// (`enable-ice = 'N'`), and only affects WebSocket/proxied connections; direct
+/// (port-forwarded) sessions are untouched.
 pub fn enabled() -> bool {
     let v = hbb_common::config::Config::get_option(OPTION_ENABLE_ICE).to_lowercase();
-    matches!(v.as_str(), "y" | "yes" | "true" | "1" | "on")
+    // On (default) unless explicitly disabled; empty/unset counts as on.
+    !matches!(v.as_str(), "n" | "no" | "false" | "0" | "off")
 }
 
 /// STUN server (`host:port`) to use for srflx discovery: the configured override
