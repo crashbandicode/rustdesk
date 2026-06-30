@@ -483,8 +483,16 @@ impl Client {
                 match crate::ice::gather_srflx_on(s, &crate::ice::configured_stun(), 3000).await {
                     Ok(srflx) => {
                         udp_nat_port = srflx.port();
-                        ice_srflx = srflx.to_string();
-                        log::info!("ICE: advertising srflx candidate {}", ice_srflx);
+                        // Advertise our host candidate (LAN ip : the local port we punch
+                        // from) too, so a peer on the same network can reach us directly
+                        // over the LAN instead of relaying.
+                        let local_port = s.local_addr().map(|a| a.port()).unwrap_or(0);
+                        let host = crate::ice::host_candidate(local_port);
+                        ice_srflx = crate::ice::encode_candidates(
+                            host.as_deref(),
+                            Some(&srflx.to_string()),
+                        );
+                        log::info!("ICE: advertising candidates {}", ice_srflx);
                     }
                     Err(e) => log::info!("ICE: srflx discovery failed: {}", e),
                 }
@@ -544,15 +552,16 @@ impl Client {
                             signed_id_pk = ph.pk.into();
                             relay_server = ph.relay_server;
                             peer_addr = AddrMangle::decode(&ph.socket_addr);
-                            // [ICE experiment] prefer the peer's STUN srflx candidate when
-                            // present: it is directly reachable even though the rendezvous
-                            // itself is proxied over WebSocket.
+                            // [ICE experiment] punch to the candidate the controlled peer
+                            // chose (host for same-network, srflx otherwise); it is directly
+                            // reachable even though the rendezvous is proxied over WebSocket.
                             let mut ice_is_udp = false;
                             if crate::ice::enabled() && !ph.ice_srflx.is_empty() {
-                                if let Ok(a) = ph.ice_srflx.parse::<SocketAddr>() {
+                                let cands = crate::ice::parse_candidates(&ph.ice_srflx);
+                                if let Some(a) = cands.host.or(cands.srflx) {
                                     peer_addr = a;
                                     ice_is_udp = true;
-                                    log::info!("ICE: punching to peer srflx {}", peer_addr);
+                                    log::info!("ICE: punching to peer candidate {}", peer_addr);
                                 }
                             }
                             feedback = ph.feedback;

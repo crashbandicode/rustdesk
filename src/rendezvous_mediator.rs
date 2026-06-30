@@ -660,18 +660,19 @@ impl RendezvousMediator {
         // direct UDP path to it (and report our own srflx back through the proxied
         // rendezvous) instead of forcing relay. Falls back to the normal path on failure.
         if crate::ice::enabled() && !ph.ice_srflx.is_empty() && !ph.force_relay {
-            if let Ok(peer_srflx) = ph.ice_srflx.parse::<SocketAddr>() {
+            let cands = crate::ice::parse_candidates(&ph.ice_srflx);
+            if cands.host.is_some() || cands.srflx.is_some() {
                 let meta = connection_meta(
                     ph.control_permissions.clone().into_option(),
                     ph.controlled_context.clone().into_option(),
                 );
                 match self
-                    .punch_udp_hole_ice(peer_srflx, ph.socket_addr.clone(), server.clone(), meta)
+                    .punch_udp_hole_ice(cands, ph.socket_addr.clone(), server.clone(), meta)
                     .await
                 {
                     Ok(()) => return Ok(()),
                     Err(e) => {
-                        log::info!("ICE punch to {} failed: {}, falling back to relay", peer_srflx, e)
+                        log::info!("ICE punch failed: {}, falling back to relay", e)
                     }
                 }
             }
@@ -765,12 +766,21 @@ impl RendezvousMediator {
         Ok(())
     }
 
-    // [ICE experiment] Punch directly to the initiator's STUN srflx candidate. We gather
-    // our own srflx on the punch socket, report it back to the initiator over the
-    // (proxied) rendezvous so it can punch toward us, then punch + accept the connection.
+    // [ICE experiment] Punch directly to one of the initiator's candidates. We gather our
+    // own srflx (and host) candidate on the punch socket, report the matching one back to
+    // the initiator over the (proxied) rendezvous so it can punch toward us, then punch +
+    // accept the connection.
+    //
+    // Candidate selection:
+    //   - Different public IP -> server-reflexive (STUN) candidates punch across NATs.
+    //   - Same public IP (same NAT, e.g. the phone on the PC's Wi-Fi) -> punching the
+    //     public mapping would need NAT hairpinning, which most routers refuse; use the
+    //     host (LAN) candidates instead for a fast, direct same-network path.
+    // On any failure (no usable candidate, strict NAT, timeout) we bail so
+    // `handle_punch_hole` falls back to relay, which always pairs.
     async fn punch_udp_hole_ice(
         &self,
-        peer_srflx: SocketAddr,
+        peer: crate::ice::Candidates,
         initiator_socket_addr: bytes::Bytes,
         server: ServerPtr,
         meta: ConnectionMeta,
@@ -779,22 +789,34 @@ impl RendezvousMediator {
         let socket = Arc::new(tokio::net::UdpSocket::bind(local_addr).await?);
         let my_srflx =
             crate::ice::gather_srflx_on(&socket, &crate::ice::configured_stun(), 3000).await?;
-        // [ICE experiment] If both peers resolve to the same public IP they sit behind the
-        // same NAT (e.g. the phone on the same Wi-Fi as the PC). Punching to each other's
-        // server-reflexive (public) candidate then needs NAT hairpinning, which most
-        // consumer routers don't support and which would hang with no media path. Bail so
-        // handle_punch_hole falls back to relay (which pairs reliably) instead of spinning.
-        if my_srflx.ip() == peer_srflx.ip() {
-            bail!(
-                "ICE peers share public IP {} (same NAT); relaying instead of hairpin punch",
-                my_srflx.ip()
-            );
-        }
-        log::info!(
-            "ICE: controlled srflx {}, punching to initiator srflx {}",
-            my_srflx,
-            peer_srflx
-        );
+        let local_port = socket.local_addr().map(|a| a.port()).unwrap_or(0);
+        let my_host = crate::ice::host_candidate(local_port);
+
+        let same_nat = peer.srflx.map(|s| s.ip() == my_srflx.ip()).unwrap_or(false);
+        let (target, my_cand) = if same_nat {
+            match (peer.host, my_host.as_deref()) {
+                (Some(ph), Some(mh)) => {
+                    log::info!("ICE: same NAT, LAN punch {} -> {}", mh, ph);
+                    (ph, mh.to_string())
+                }
+                _ => bail!(
+                    "ICE peers share public IP {} (same NAT) but no host candidate; relaying",
+                    my_srflx.ip()
+                ),
+            }
+        } else {
+            match peer.srflx {
+                Some(ps) => {
+                    log::info!(
+                        "ICE: controlled srflx {}, punching to initiator srflx {}",
+                        my_srflx,
+                        ps
+                    );
+                    (ps, my_srflx.to_string())
+                }
+                None => bail!("ICE: no reachable initiator candidate; relaying"),
+            }
+        };
 
         use hbb_common::protobuf::Enum;
         let nat_type = NatType::from_i32(Config::get_nat_type()).unwrap_or(NatType::UNKNOWN_NAT);
@@ -804,22 +826,18 @@ impl RendezvousMediator {
             relay_server: self.get_relay_server(String::new()),
             nat_type: nat_type.into(),
             version: crate::VERSION.to_owned(),
-            ice_srflx: my_srflx.to_string(),
+            ice_srflx: my_cand,
             ..Default::default()
         };
         let mut msg_out = Message::new();
         msg_out.set_punch_hole_sent(msg_punch);
-        // Report our candidate to the initiator via the rendezvous (relayed by hbbs).
+        // Report our chosen candidate to the initiator via the rendezvous (relayed by hbbs).
         let mut signaling = connect_tcp(&*self.host, CONNECT_TIMEOUT).await?;
         signaling.send(&msg_out).await?;
 
         // Bound the punch: if traversal fails (e.g. strict/symmetric NAT) don't hang the
         // session forever — time out so handle_punch_hole falls back to relay.
-        match hbb_common::timeout(
-            10_000,
-            udp_nat_listen(socket, peer_srflx, peer_srflx, server, meta),
-        )
-        .await
+        match hbb_common::timeout(10_000, udp_nat_listen(socket, target, target, server, meta)).await
         {
             Ok(r) => r,
             Err(_) => bail!("ICE udp punch timed out; falling back to relay"),
