@@ -186,7 +186,10 @@ jobs:
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: rustdesk-ice-windows-installer
-          path: rustdesk-${{ env.VERSION }}-install.exe
+          # build.py names this with its own internal version (e.g. rustdesk-1.4.8-install.exe),
+          # not env.VERSION, so match by glob.
+          path: rustdesk-*-install.exe
+          if-no-files-found: error
 
   build-android:
     name: build android arm64 (apk)
