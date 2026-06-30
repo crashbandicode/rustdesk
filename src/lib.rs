@@ -77,3 +77,6 @@ pub mod privacy_mode;
 pub mod virtual_display_manager;
 
 mod kcp_stream;
+
+// Experimental ICE-style NAT traversal (see ICE_OVER_CLOUDFLARE.md).
+pub mod ice;
