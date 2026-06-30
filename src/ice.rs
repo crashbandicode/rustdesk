@@ -47,6 +47,31 @@ const BINDING_REQUEST: u16 = 0x0001;
 const ATTR_MAPPED_ADDRESS: u16 = 0x0001;
 const ATTR_XOR_MAPPED_ADDRESS: u16 = 0x0020;
 
+/// Config option name that turns the experimental ICE path on (default off).
+pub const OPTION_ENABLE_ICE: &str = "enable-ice";
+/// Config option name for overriding the STUN server used for srflx discovery.
+pub const OPTION_STUN_SERVER: &str = "custom-stun-server";
+
+/// Whether the experimental ICE traversal path is enabled. Default off so stock
+/// behaviour (direct punch / relay) is completely unchanged unless opted in.
+/// Note: we do NOT use `option2bool` here because it defaults unknown/empty
+/// options to true; this experiment must default to false.
+pub fn enabled() -> bool {
+    let v = hbb_common::config::Config::get_option(OPTION_ENABLE_ICE).to_lowercase();
+    matches!(v.as_str(), "y" | "yes" | "true" | "1" | "on")
+}
+
+/// STUN server (`host:port`) to use for srflx discovery: the configured override
+/// if set, otherwise the first default public server.
+pub fn configured_stun() -> String {
+    let s = hbb_common::config::Config::get_option(OPTION_STUN_SERVER);
+    if s.is_empty() {
+        DEFAULT_STUN_SERVERS[0].to_string()
+    } else {
+        s
+    }
+}
+
 /// Build a STUN Binding Request with the given 96-bit transaction id.
 pub fn build_binding_request(txn: &[u8; 12]) -> Vec<u8> {
     let mut buf = Vec::with_capacity(20);

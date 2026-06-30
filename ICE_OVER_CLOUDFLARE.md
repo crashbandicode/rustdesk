@@ -76,28 +76,32 @@ never exposed; public STUN only ever learns the peers' own mappings.
 
 ## 5. Concrete change list
 
-### A. `rustdesk` client (this repo)
-- [x] `src/ice.rs` — STUN srflx gatherer + EIM probe (this commit).
-- [ ] Controlling side: replace/augment `test_udp_uat` so that **under
-      `use_ws()`** it gathers srflx via `ice::gather_srflx_on` and advertises
-      the full `IP:port` (not just `udp_port`).
-- [ ] Controlled side: in `handle_punch_hole`, when an ICE candidate is present,
-      do **not** force relay; gather our own srflx on the punch socket and punch
-      to the peer candidate.
-- [ ] A config option to enable the experiment (e.g. `enable-ice` /
-      `custom-stun-server`) so default behaviour is unchanged.
+### A. `rustdesk` client (this repo) — DONE, compiles (`cargo check --features linux-pkg-config`)
+- [x] `src/ice.rs` — STUN srflx gatherer + EIM probe + `enabled()`/`configured_stun()`.
+- [x] Controlling side (`client.rs`): under `use_ws()` + ICE, skip the (proxy-dropped)
+      UDP NAT test, gather srflx via `ice::gather_srflx_on` on the punch socket, and
+      advertise the full `IP:port` in `PunchHoleRequest.ice_srflx`; on the
+      `PunchHoleResponse`, punch toward `ph.ice_srflx` when present.
+- [x] Controlled side (`rendezvous_mediator.rs`): in `handle_punch_hole`, when an ICE
+      candidate is present and not force-relay, gather our own srflx, report it back via
+      `PunchHoleSent.ice_srflx` over the proxied rendezvous, and punch to the peer
+      candidate (`punch_udp_hole_ice`). Falls back to relay on any failure.
+- [x] Config options `enable-ice` (default **off**) and `custom-stun-server`.
 
-### B. `hbb_common` (submodule — must be forked)
-- [ ] Add candidate fields to the rendezvous protobuf (`rendezvous.proto`):
-      a full peer reflexive address (and ideally a repeated `candidates` list
-      for host + srflx) on `PunchHoleRequest` / `PunchHole` /
-      `PunchHoleSent` / `PunchHoleResponse`.
+### B. `hbb_common` (submodule) — DONE, forked + repointed
+- [x] Added `string ice_srflx` to `PunchHoleRequest`/`PunchHole`/`PunchHoleSent`/
+      `PunchHoleResponse` (backward-compatible new field numbers). Pushed to
+      `crashbandicode/hbb_common@experiment/ice-candidate-traversal`; the rustdesk
+      submodule URL + commit are repointed there.
 - Note: a shallow clone does **not** fetch submodules; run
   `git submodule update --init libs/hbb_common` before building.
 
-### C. Server (`crashbandicode/sctgdesk-server`, hbbs)
-- [ ] When a request carries ICE candidates, **relay them verbatim** instead of
-      overwriting `socket_addr` with the proxy-observed address.
+### C. Server (`crashbandicode/sctgdesk-server`, hbbs) — TODO (required for e2e)
+- [ ] Bump the server's `hbb_common` to one that has `ice_srflx`.
+- [ ] In the punch-hole request handler, copy `ice_srflx` verbatim from
+      `PunchHoleRequest` → `PunchHole` (to the controlled peer) and from
+      `PunchHoleSent` → `PunchHoleResponse` (to the initiator), instead of relying on
+      the proxy-observed `socket_addr`.
 - [ ] Optionally surface a server-provided STUN list to clients.
 
 ## 6. NAT reality (measured today, 2026-06-30)
