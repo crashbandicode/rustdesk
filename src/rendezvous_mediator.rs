@@ -661,7 +661,7 @@ impl RendezvousMediator {
         // rendezvous) instead of forcing relay. Falls back to the normal path on failure.
         if crate::ice::enabled() && !ph.ice_srflx.is_empty() && !ph.force_relay {
             let cands = crate::ice::parse_candidates(&ph.ice_srflx);
-            if cands.host.is_some() || cands.srflx.is_some() {
+            if !cands.hosts.is_empty() || cands.srflx.is_some() {
                 let meta = connection_meta(
                     ph.control_permissions.clone().into_option(),
                     ph.controlled_context.clone().into_option(),
@@ -767,15 +767,17 @@ impl RendezvousMediator {
     }
 
     // [ICE experiment] Punch directly to one of the initiator's candidates. We gather our
-    // own srflx (and host) candidate on the punch socket, report the matching one back to
-    // the initiator over the (proxied) rendezvous so it can punch toward us, then punch +
-    // accept the connection.
+    // own srflx on the punch socket, choose the best pair, report the matching candidate
+    // back to the initiator over the (proxied) rendezvous so it can punch toward us, then
+    // punch + accept the connection.
     //
-    // Candidate selection:
-    //   - Different public IP -> server-reflexive (STUN) candidates punch across NATs.
-    //   - Same public IP (same NAT, e.g. the phone on the PC's Wi-Fi) -> punching the
-    //     public mapping would need NAT hairpinning, which most routers refuse; use the
-    //     host (LAN) candidates instead for a fast, direct same-network path.
+    // Candidate selection (in priority order):
+    //   1. A directly-reachable LAN/overlay pair: for each host candidate the peer sent, the
+    //      OS routing table tells us the local source IP that reaches it. A connected subnet
+    //      outranks a VPN default route, so this works even when either side runs a
+    //      full-tunnel VPN. Fast, no relay, no hairpin.
+    //   2. Else the server-reflexive (STUN) pair, which punches across different NATs.
+    //   3. Else (same public IP, no LAN pair -> would need hairpinning) bail.
     // On any failure (no usable candidate, strict NAT, timeout) we bail so
     // `handle_punch_hole` falls back to relay, which always pairs.
     async fn punch_udp_hole_ice(
@@ -790,33 +792,41 @@ impl RendezvousMediator {
         let my_srflx =
             crate::ice::gather_srflx_on(&socket, &crate::ice::configured_stun(), 3000).await?;
         let local_port = socket.local_addr().map(|a| a.port()).unwrap_or(0);
-        let my_host = crate::ice::host_candidate(local_port).await;
 
-        let same_nat = peer.srflx.map(|s| s.ip() == my_srflx.ip()).unwrap_or(false);
-        let (target, my_cand) = if same_nat {
-            match (peer.host, my_host.as_deref()) {
-                (Some(ph), Some(mh)) => {
-                    log::info!("ICE: same NAT, LAN punch {} -> {}", mh, ph);
-                    (ph, mh.to_string())
+        // Prefer a directly-reachable LAN/overlay pair: for each host candidate the peer
+        // advertised, ask the OS which local source IP would reach it. A directly-connected
+        // subnet outranks a VPN default route, so this finds the real LAN even when either
+        // side runs a full-tunnel VPN. If that source shares the peer's private /24 it's a
+        // usable same-network pair, and we advertise that exact source back.
+        let mut chosen: Option<(SocketAddr, String, u64)> = None;
+        for ph in &peer.hosts {
+            if let (std::net::IpAddr::V4(pv4), Some(std::net::IpAddr::V4(src))) =
+                (ph.ip(), crate::ice::source_ip_for(ph.ip()))
+            {
+                if crate::ice::same_lan_v4(src, pv4) {
+                    let my_cand = SocketAddr::new(src.into(), local_port).to_string();
+                    log::info!("ICE: LAN punch {} -> {}", my_cand, ph);
+                    chosen = Some((*ph, my_cand, 6_000));
+                    break;
                 }
-                _ => bail!(
-                    "ICE peers share public IP {} (same NAT) but no host candidate; relaying",
+            }
+        }
+        // Otherwise fall back to the server-reflexive (STUN) pair across NATs — unless we
+        // share the peer's public IP (same NAT, no LAN pair) where hairpin punching fails.
+        if chosen.is_none() {
+            match peer.srflx {
+                Some(ps) if ps.ip() != my_srflx.ip() => {
+                    log::info!("ICE: srflx punch {} -> {}", my_srflx, ps);
+                    chosen = Some((ps, my_srflx.to_string(), 10_000));
+                }
+                Some(_) => bail!(
+                    "ICE shares public IP {} (same NAT) but no LAN pair; relaying",
                     my_srflx.ip()
                 ),
-            }
-        } else {
-            match peer.srflx {
-                Some(ps) => {
-                    log::info!(
-                        "ICE: controlled srflx {}, punching to initiator srflx {}",
-                        my_srflx,
-                        ps
-                    );
-                    (ps, my_srflx.to_string())
-                }
                 None => bail!("ICE: no reachable initiator candidate; relaying"),
             }
-        };
+        }
+        let (target, my_cand, punch_timeout_ms) = chosen.expect("candidate chosen above");
 
         use hbb_common::protobuf::Enum;
         let nat_type = NatType::from_i32(Config::get_nat_type()).unwrap_or(NatType::UNKNOWN_NAT);
@@ -837,7 +847,11 @@ impl RendezvousMediator {
 
         // Bound the punch: if traversal fails (e.g. strict/symmetric NAT) don't hang the
         // session forever — time out so handle_punch_hole falls back to relay.
-        match hbb_common::timeout(10_000, udp_nat_listen(socket, target, target, server, meta)).await
+        match hbb_common::timeout(
+            punch_timeout_ms,
+            udp_nat_listen(socket, target, target, server, meta),
+        )
+        .await
         {
             Ok(r) => r,
             Err(_) => bail!("ICE udp punch timed out; falling back to relay"),
