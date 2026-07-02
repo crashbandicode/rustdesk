@@ -799,6 +799,7 @@ impl RendezvousMediator {
         // side runs a full-tunnel VPN. If that source shares the peer's private /24 it's a
         // usable same-network pair, and we advertise that exact source back.
         let mut chosen: Option<(SocketAddr, String, u64)> = None;
+        let mut is_symmetric = false;
         for ph in &peer.hosts {
             if let (std::net::IpAddr::V4(pv4), Some(std::net::IpAddr::V4(src))) =
                 (ph.ip(), crate::ice::source_ip_for(ph.ip()))
@@ -816,11 +817,28 @@ impl RendezvousMediator {
         if chosen.is_none() {
             match peer.srflx {
                 Some(ps) if ps.ip() != my_srflx.ip() => {
-                    log::info!("ICE: srflx punch {} -> {}", my_srflx, ps);
-                    // Symmetric NAT / full-tunnel VPN peers can't be punched; keep this
-                    // short so handle_punch_hole falls back to relay quickly instead of
-                    // spinning ~10s on a doomed hole. Cone-NAT punches complete in ~1 RTT.
-                    chosen = Some((ps, my_srflx.to_string(), 3_000));
+                    // Probe a second (different-provider) STUN server on the *same* socket.
+                    // A different mapped port means this NAT / full-tunnel VPN gateway is
+                    // symmetric, so a hole punch can never land. Detecting it here lets us
+                    // report nat_type=SYMMETRIC to the initiator, which makes ANY initiator
+                    // build (old or new) relay in ~1s via the stock symmetric fast-path
+                    // instead of spinning ~20s on a doomed direct attempt.
+                    let second = crate::ice::second_stun(&crate::ice::configured_stun());
+                    match crate::ice::gather_srflx_on(&socket, &second, 2000).await {
+                        Ok(b) if b.ip() == my_srflx.ip() && b.port() != my_srflx.port() => {
+                            is_symmetric = true;
+                            log::info!(
+                                "ICE: symmetric NAT ({} vs {}); signaling relay to initiator",
+                                my_srflx, b
+                            );
+                            // doomed punch -> keep our own wait tiny, we relay
+                            chosen = Some((ps, my_srflx.to_string(), 1_000));
+                        }
+                        _ => {
+                            log::info!("ICE: srflx punch {} -> {}", my_srflx, ps);
+                            chosen = Some((ps, my_srflx.to_string(), 3_000));
+                        }
+                    }
                 }
                 Some(_) => bail!(
                     "ICE shares public IP {} (same NAT) but no LAN pair; relaying",
@@ -832,7 +850,13 @@ impl RendezvousMediator {
         let (target, my_cand, punch_timeout_ms) = chosen.expect("candidate chosen above");
 
         use hbb_common::protobuf::Enum;
-        let nat_type = NatType::from_i32(Config::get_nat_type()).unwrap_or(NatType::UNKNOWN_NAT);
+        // Report SYMMETRIC when detected so the initiator relays fast; otherwise pass
+        // through our configured NAT type.
+        let nat_type = if is_symmetric {
+            NatType::SYMMETRIC
+        } else {
+            NatType::from_i32(Config::get_nat_type()).unwrap_or(NatType::UNKNOWN_NAT)
+        };
         let msg_punch = PunchHoleSent {
             socket_addr: initiator_socket_addr,
             id: Config::get_id(),
