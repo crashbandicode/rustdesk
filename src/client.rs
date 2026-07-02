@@ -739,6 +739,15 @@ impl Client {
             if connect_timeout < MIN {
                 connect_timeout = MIN;
             }
+            // [ICE experiment] When a relay fallback is available, don't burn more than a
+            // few seconds on a direct attempt before switching to relay. A successful direct
+            // connect returns immediately via select_ok, so this only shortens the give-up
+            // latency for un-punchable peers (symmetric NAT / full-tunnel VPN), turning the
+            // old ~20s spin into ~4s. Direct/LAN/cone punches are unaffected.
+            const RELAY_FALLBACK_CAP: u64 = 4000;
+            if !relay_server.is_empty() && connect_timeout > RELAY_FALLBACK_CAP {
+                connect_timeout = RELAY_FALLBACK_CAP;
+            }
         }
         log::info!("peer address: {}, timeout: {}", peer, connect_timeout);
         let start = std::time::Instant::now();
