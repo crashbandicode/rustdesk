@@ -806,7 +806,7 @@ impl RendezvousMediator {
                 if crate::ice::same_lan_v4(src, pv4) {
                     let my_cand = SocketAddr::new(src.into(), local_port).to_string();
                     log::info!("ICE: LAN punch {} -> {}", my_cand, ph);
-                    chosen = Some((*ph, my_cand, 6_000));
+                    chosen = Some((*ph, my_cand, 4_000));
                     break;
                 }
             }
@@ -817,7 +817,10 @@ impl RendezvousMediator {
             match peer.srflx {
                 Some(ps) if ps.ip() != my_srflx.ip() => {
                     log::info!("ICE: srflx punch {} -> {}", my_srflx, ps);
-                    chosen = Some((ps, my_srflx.to_string(), 10_000));
+                    // Symmetric NAT / full-tunnel VPN peers can't be punched; keep this
+                    // short so handle_punch_hole falls back to relay quickly instead of
+                    // spinning ~10s on a doomed hole. Cone-NAT punches complete in ~1 RTT.
+                    chosen = Some((ps, my_srflx.to_string(), 3_000));
                 }
                 Some(_) => bail!(
                     "ICE shares public IP {} (same NAT) but no LAN pair; relaying",
