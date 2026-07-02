@@ -77,6 +77,19 @@ pub fn configured_stun() -> String {
     }
 }
 
+/// A second, different STUN server for NAT-mapping-behaviour probing. Must resolve
+/// to a different IP than `first` for the symmetric-NAT test to be meaningful, so
+/// we prefer a different provider (Cloudflare vs Google) rather than the sibling
+/// Google anycast address which shares a mapping.
+pub fn second_stun(first: &str) -> String {
+    for s in DEFAULT_STUN_SERVERS {
+        if *s != first {
+            return s.to_string();
+        }
+    }
+    DEFAULT_STUN_SERVERS[1].to_string()
+}
+
 /// Build a STUN Binding Request with the given 96-bit transaction id.
 pub fn build_binding_request(txn: &[u8; 12]) -> Vec<u8> {
     let mut buf = Vec::with_capacity(20);
