@@ -4376,12 +4376,24 @@ async fn udp_nat_connect(
     typ: &'static str,
     ms_timeout: u64,
 ) -> ResultType<(Stream, Option<KcpStream>, &'static str)> {
-    crate::punch_udp(socket.clone(), false)
-        .await
-        .map_err(|err| {
+    // Bound the UDP hole punch by the caller's connect timeout. Without this,
+    // punch_udp keeps blasting packets for its internal MAX_TIME (20s) waiting
+    // for a reply that never comes when the peer is behind symmetric NAT / a
+    // full-tunnel VPN, so the initiator ignores the relay the peer already
+    // offered and only relays after ~20s. A real (cone/LAN) punch replies in
+    // well under a second, so this only shortens the doomed case; for symmetric
+    // peers connect_timeout is 1s, elsewhere it is capped at ~4s.
+    match hbb_common::timeout(ms_timeout, crate::punch_udp(socket.clone(), false)).await {
+        Ok(Ok(_)) => {}
+        Ok(Err(err)) => {
             log::debug!("{err}");
-            anyhow!(err)
-        })?;
+            return Err(anyhow!(err));
+        }
+        Err(_) => {
+            log::debug!("UDP punch timed out after {ms_timeout}ms; falling back to relay");
+            bail!("UDP punch timed out after {ms_timeout}ms");
+        }
+    }
     let res = KcpStream::connect(socket, Duration::from_millis(ms_timeout))
         .await
         .map_err(|err| {
