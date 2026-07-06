@@ -90,6 +90,8 @@ jobs:
           cargo install flutter_rust_bridge_codegen --version ${{ env.FLUTTER_RUST_BRIDGE_VERSION }} --features "uuid" --locked
           # extended_text 14 needs a newer Dart than 3.22.3; downgrade for resolution only.
           sed -i -e 's/extended_text: 14.0.0/extended_text: 13.0.0/g' flutter/pubspec.yaml
+          # qr_code_scanner_plus 2.2 needs Dart 3.12; bridge output does not depend on it.
+          sed -i -e 's/qr_code_scanner_plus: \^2.2.0/qr_code_scanner_plus: ^2.0.14/g' flutter/pubspec.yaml
           pushd flutter && flutter pub get && popd
 
       - name: Run flutter rust bridge
