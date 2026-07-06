@@ -171,6 +171,14 @@ class MainActivity : FlutterActivity() {
                         result.success(false)
                     }
                 }
+                "get_external_storage_directories" -> {
+                    val roots = getExternalFilesDirs(null)
+                        .mapNotNull { file ->
+                            file?.absolutePath?.substringBefore("/Android/")
+                        }
+                        .distinct()
+                    result.success(roots)
+                }
                 START_ACTION -> {
                     if (call.arguments is String) {
                         startAction(context, call.arguments as String)

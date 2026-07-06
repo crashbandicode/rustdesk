@@ -34,7 +34,20 @@ jobs:
         with:
           submodules: recursive
 
+      - name: Cache generated bridge files
+        id: bridge-output-cache
+        uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5
+        with:
+          path: |
+            ./src/bridge_generated.rs
+            ./src/bridge_generated.io.rs
+            ./flutter/lib/generated_bridge.dart
+            ./flutter/lib/generated_bridge.freezed.dart
+            ./flutter/macos/Runner/bridge_generated.h
+          key: bridge-output-v1-${{ env.BRIDGE_FLUTTER_VERSION }}-${{ env.FLUTTER_RUST_BRIDGE_VERSION }}-${{ hashFiles('src/**/*.rs', 'libs/hbb_common/protos/**/*.proto', 'flutter/pubspec.yaml', 'Cargo.lock') }}
+
       - name: Install prerequisites
+        if: steps.bridge-output-cache.outputs.cache-hit != 'true'
         run: |
           sudo apt-get update -y
           sudo apt-get install -y \
@@ -42,6 +55,7 @@ jobs:
             llvm-dev nasm ninja-build pkg-config wget ca-certificates
 
       - name: Install Rust toolchain
+        if: steps.bridge-output-cache.outputs.cache-hit != 'true'
         uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9 # v1
         with:
           toolchain: ${{ env.RUST_VERSION }}
@@ -49,16 +63,19 @@ jobs:
           components: "rustfmt"
 
       - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+        if: steps.bridge-output-cache.outputs.cache-hit != 'true'
         with:
           prefix-key: bridge-ubuntu-22.04
 
       - name: Cache Bridge
+        if: steps.bridge-output-cache.outputs.cache-hit != 'true'
         uses: actions/cache@6f8efc29b200d32929f49075959781ed54ec270c # v3
         with:
           path: /tmp/flutter_rust_bridge
           key: bridge-${{ env.BRIDGE_FLUTTER_VERSION }}
 
       - name: Install flutter
+        if: steps.bridge-output-cache.outputs.cache-hit != 'true'
         uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2 # v2
         with:
           channel: "stable"
@@ -66,6 +83,7 @@ jobs:
           cache: true
 
       - name: Install flutter rust bridge deps
+        if: steps.bridge-output-cache.outputs.cache-hit != 'true'
         shell: bash
         run: |
           cargo install cargo-expand --version ${{ env.CARGO_EXPAND_VERSION }} --locked
@@ -75,6 +93,7 @@ jobs:
           pushd flutter && flutter pub get && popd
 
       - name: Run flutter rust bridge
+        if: steps.bridge-output-cache.outputs.cache-hit != 'true'
         run: |
           ~/.cargo/bin/flutter_rust_bridge_codegen --rust-input ./src/flutter_ffi.rs --dart-output ./flutter/lib/generated_bridge.dart --c-output ./flutter/macos/Runner/bridge_generated.h
 
@@ -123,6 +142,7 @@ jobs:
           channel: "stable"
           flutter-version: ${{ env.FLUTTER_VERSION }}
           architecture: x64
+          cache: true
 
       - name: Replace engine with rustdesk custom flutter engine
         run: |
@@ -157,7 +177,15 @@ jobs:
           vcpkgGitCommitId: ${{ env.VCPKG_COMMIT_ID }}
           doNotCache: false
 
+      - name: Cache installed Windows vcpkg dependencies
+        id: windows-vcpkg-installed-cache
+        uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5
+        with:
+          path: C:\vcpkg\installed
+          key: vcpkg-installed-windows-x64-static-v1-${{ env.VCPKG_COMMIT_ID }}-${{ hashFiles('vcpkg.json', 'res/vcpkg/**') }}
+
       - name: Install vcpkg dependencies
+        if: steps.windows-vcpkg-installed-cache.outputs.cache-hit != 'true'
         env:
           VCPKG_DEFAULT_HOST_TRIPLET: x64-windows-static
         shell: bash
@@ -231,11 +259,23 @@ jobs:
         with:
           submodules: recursive
 
+      - name: Cache Android Gradle and pub dependencies
+        uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+            ~/.pub-cache
+          key: android-build-tools-v1-${{ env.ANDROID_FLUTTER_VERSION }}-${{ hashFiles('flutter/pubspec.lock', 'flutter/android/**/*.gradle', 'flutter/android/gradle.properties', 'flutter/android/gradle/wrapper/gradle-wrapper.properties') }}
+          restore-keys: |
+            android-build-tools-v1-${{ env.ANDROID_FLUTTER_VERSION }}-
+
       - name: Install flutter
         uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2 # v2
         with:
           channel: "stable"
           flutter-version: ${{ env.ANDROID_FLUTTER_VERSION }}
+          cache: true
 
       - name: Patch flutter
         run: |
@@ -257,7 +297,15 @@ jobs:
           vcpkgGitCommitId: ${{ env.VCPKG_COMMIT_ID }}
           doNotCache: false
 
+      - name: Cache installed Android vcpkg dependencies
+        id: android-vcpkg-installed-cache
+        uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5
+        with:
+          path: /opt/artifacts/vcpkg/installed
+          key: vcpkg-installed-android-arm64-v1-${{ env.VCPKG_COMMIT_ID }}-${{ env.NDK_VERSION }}-${{ hashFiles('vcpkg.json', 'res/vcpkg/**') }}
+
       - name: Install vcpkg dependencies (android arm64)
+        if: steps.android-vcpkg-installed-cache.outputs.cache-hit != 'true'
         shell: bash
         run: |
           if ! ./flutter/build_android_deps.sh arm64-v8a; then
