@@ -44,7 +44,7 @@ jobs:
             ./flutter/lib/generated_bridge.dart
             ./flutter/lib/generated_bridge.freezed.dart
             ./flutter/macos/Runner/bridge_generated.h
-          key: bridge-output-v1-${{ env.BRIDGE_FLUTTER_VERSION }}-${{ env.FLUTTER_RUST_BRIDGE_VERSION }}-${{ hashFiles('src/**/*.rs', 'libs/hbb_common/protos/**/*.proto', 'flutter/pubspec.yaml', 'Cargo.lock') }}
+          key: bridge-output-v1-${{ env.BRIDGE_FLUTTER_VERSION }}-${{ env.FLUTTER_RUST_BRIDGE_VERSION }}-${{ hashFiles('src/**/*.rs', 'libs/hbb_common/protos/**/*.proto', 'Cargo.lock') }}
 
       - name: Install prerequisites
         if: steps.bridge-output-cache.outputs.cache-hit != 'true'
