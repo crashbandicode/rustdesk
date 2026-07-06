@@ -335,34 +335,51 @@ class _RemotePageState extends State<RemotePage> with WidgetsBindingObserver {
       // clipboard
       oldValue = '';
     }
-    if (newValue.length == oldValue.length) {
-      // ?
-    } else if (newValue.length < oldValue.length) {
-      final char = 'VK_BACK';
-      inputModel.inputKey(char);
-    } else {
-      final content = newValue.substring(oldValue.length);
-      if (content.length > 1) {
-        if (oldValue != '' &&
-            content.length == 2 &&
-            (content == '""' ||
-                content == '()' ||
-                content == '[]' ||
-                content == '<>' ||
-                content == "{}" ||
-                content == '”“' ||
-                content == '《》' ||
-                content == '（）' ||
-                content == '【】')) {
-          // can not only input content[0], because when input ], [ are also auo insert, which cause ] never be input
-          bind.sessionInputString(sessionId: sessionId, value: content);
-          _openKeyboardUnlocked();
-          return;
-        }
+    // Diff on the common prefix instead of only comparing lengths. The old
+    // length-only logic could not handle IME autocomplete/autocorrect that
+    // rewrites earlier letters: a same-length correction (e.g. "teh" -> "the")
+    // did nothing, and a shorter value only ever emitted a single VK_BACK. Now
+    // we backspace everything past the shared prefix and retype the new tail,
+    // so tapping a suggestion backtracks and fixes the misspelling. This works
+    // with the initText '1'*1024 anchor because the shared prefix includes the
+    // unchanged buffer.
+    var common = 0;
+    for (;
+        common < oldValue.length &&
+            common < newValue.length &&
+            oldValue[common] == newValue[common];
+        ++common) {}
+
+    // Delete the changed tail of the old value.
+    for (var i = 0; i < oldValue.length - common; ++i) {
+      inputModel.inputKey('VK_BACK');
+    }
+
+    // Type the changed tail of the new value.
+    final content = newValue.substring(common);
+    if (content.isEmpty) {
+      return;
+    }
+    if (content.length > 1) {
+      if (oldValue.length == common &&
+          content.length == 2 &&
+          (content == '""' ||
+              content == '()' ||
+              content == '[]' ||
+              content == '<>' ||
+              content == "{}" ||
+              content == '”“' ||
+              content == '《》' ||
+              content == '（）' ||
+              content == '【】')) {
+        // can not only input content[0], because when input ], [ are also auo insert, which cause ] never be input
         bind.sessionInputString(sessionId: sessionId, value: content);
-      } else {
-        inputChar(content);
+        _openKeyboardUnlocked();
+        return;
       }
+      bind.sessionInputString(sessionId: sessionId, value: content);
+    } else {
+      inputChar(content);
     }
   }
 
