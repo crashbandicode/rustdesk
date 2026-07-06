@@ -17,6 +17,7 @@ import android.app.PendingIntent.FLAG_UPDATE_CURRENT
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.content.pm.ServiceInfo
 import android.content.res.Configuration
 import android.content.res.Configuration.ORIENTATION_LANDSCAPE
 import android.graphics.Color
@@ -214,6 +215,17 @@ class MainService : Service() {
 
     // video
     private var mediaProjection: MediaProjection? = null
+    private val mediaProjectionCallback = object : MediaProjection.Callback() {
+        override fun onStop() {
+            Log.d(logTag, "MediaProjection stopped")
+            stopCapture()
+            virtualDisplay?.release()
+            virtualDisplay = null
+            mediaProjection = null
+            _isReady = false
+            checkMediaPermission()
+        }
+    }
     private var surface: Surface? = null
     private val sendVP9Thread = Executors.newSingleThreadExecutor()
     private var videoEncoder: MediaCodec? = null
@@ -327,7 +339,9 @@ class MainService : Service() {
         Log.d("whichService", "this service: ${Thread.currentThread()}")
         super.onStartCommand(intent, flags, startId)
         if (intent?.action == ACT_INIT_MEDIA_PROJECTION_AND_SERVICE) {
-            createForegroundNotification()
+            val mediaProjectionResultIntent =
+                intent.getParcelableExtra<Intent>(EXT_MEDIA_PROJECTION_RES_INTENT)
+            createForegroundNotification(mediaProjectionResultIntent != null)
 
             if (intent.getBooleanExtra(EXT_INIT_FROM_BOOT, false)) {
                 FFI.startService()
@@ -336,9 +350,14 @@ class MainService : Service() {
             val mediaProjectionManager =
                 getSystemService(MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
 
-            intent.getParcelableExtra<Intent>(EXT_MEDIA_PROJECTION_RES_INTENT)?.let {
+            mediaProjectionResultIntent?.let {
+                mediaProjection?.unregisterCallback(mediaProjectionCallback)
                 mediaProjection =
                     mediaProjectionManager.getMediaProjection(Activity.RESULT_OK, it)
+                mediaProjection?.registerCallback(
+                    mediaProjectionCallback,
+                    Handler(Looper.getMainLooper())
+                )
                 checkMediaPermission()
                 _isReady = true
             } ?: let {
@@ -486,6 +505,10 @@ class MainService : Service() {
             virtualDisplay = null
         }
 
+        mediaProjection?.let {
+            it.unregisterCallback(mediaProjectionCallback)
+            it.stop()
+        }
         mediaProjection = null
         checkMediaPermission()
         stopForeground(true)
@@ -617,7 +640,7 @@ class MainService : Service() {
     }
 
     @SuppressLint("UnspecifiedImmutableFlag")
-    private fun createForegroundNotification() {
+    private fun createForegroundNotification(includeMediaProjection: Boolean = false) {
         val intent = Intent(this, MainActivity::class.java).apply {
             flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_RESET_TASK_IF_NEEDED
             action = Intent.ACTION_MAIN
@@ -642,7 +665,16 @@ class MainService : Service() {
             .setColor(ContextCompat.getColor(this, R.color.primary))
             .setWhen(System.currentTimeMillis())
             .build()
-        startForeground(DEFAULT_NOTIFY_ID, notification)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            var serviceTypes = ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE
+            if (includeMediaProjection) {
+                serviceTypes = serviceTypes or
+                    ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION
+            }
+            startForeground(DEFAULT_NOTIFY_ID, notification, serviceTypes)
+        } else {
+            startForeground(DEFAULT_NOTIFY_ID, notification)
+        }
     }
 
     private fun loginRequestNotification(
