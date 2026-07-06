@@ -293,6 +293,26 @@ jobs:
           mkdir -p ./flutter/android/app/src/main/jniLibs/arm64-v8a
           cp ./target/aarch64-linux-android/release/liblibrustdesk.so ./flutter/android/app/src/main/jniLibs/arm64-v8a/librustdesk.so
 
+      - name: Set up release signing
+        env:
+          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          # Stable signing key (from repo secrets) so a sideloaded APK installs OVER the
+          # existing app and keeps all data (servers, peers, settings) instead of forcing
+          # an uninstall (which wipes config) on every build. Fingerprint SHA256:
+          # 9C:F8:06:C5:AD:C6:BF:23:E5:DA:63:33:AD:CD:C7:3A:B8:BA:F2:B4:E7:86:07:90:EA:E1:64:93:3A:83:16:B2
+          echo "$ANDROID_KEYSTORE_BASE64" | base64 -d > flutter/android/app/rustdesk-ice.p12
+          cat > flutter/android/key.properties <<EOF
+          storeFile=rustdesk-ice.p12
+          storeType=PKCS12
+          storePassword=$ANDROID_KEYSTORE_PASSWORD
+          keyAlias=$ANDROID_KEY_ALIAS
+          keyPassword=$ANDROID_KEY_PASSWORD
+          EOF
+
       - name: Build rustdesk apk
         shell: bash
         env:
@@ -300,8 +320,6 @@ jobs:
         run: |
           export PATH=/usr/lib/jvm/java-17-openjdk-amd64/bin:$PATH
           sed -i "s/org.gradle.jvmargs=-Xmx1024M/org.gradle.jvmargs=-Xmx2g/g" ./flutter/android/gradle.properties
-          # No release keystore in this experiment build: sign with the debug key.
-          sed -i "s/signingConfigs.release/signingConfigs.debug/g" ./flutter/android/app/build.gradle
           mkdir -p ./flutter/android/app/src/main/jniLibs/arm64-v8a
           cp ${ANDROID_NDK_HOME}/toolchains/llvm/prebuilt/linux-x86_64/sysroot/usr/lib/aarch64-linux-android/libc++_shared.so ./flutter/android/app/src/main/jniLibs/arm64-v8a/
           cp ./target/aarch64-linux-android/release/liblibrustdesk.so ./flutter/android/app/src/main/jniLibs/arm64-v8a/librustdesk.so
