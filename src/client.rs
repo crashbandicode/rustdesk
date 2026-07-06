@@ -478,7 +478,12 @@ impl Client {
         // candidate from a public STUN server on the very socket we will punch from and
         // advertise it, so the controlled peer can reach us directly.
         let mut ice_srflx = String::new();
-        if crate::ice::enabled() && use_ws() {
+        // Don't advertise ICE candidates when we're force-relaying (manual "Always
+        // relay" or the symmetric-peer auto-relay below). With no candidate the
+        // controlled peer skips its ~5s STUN gather + doomed direct punch and goes
+        // straight to the clean single-uuid relay, so relay pairs in <1s instead of
+        // losing the punch/relay race that caused the relay-off reconnect loop.
+        if crate::ice::enabled() && use_ws() && !interface.is_force_relay() {
             if let Some(s) = udp.0.as_ref() {
                 match crate::ice::gather_srflx_on(s, &crate::ice::configured_stun(), 3000).await {
                     Ok(srflx) => {
@@ -549,6 +554,23 @@ impl Client {
                             is_local = ph.is_local();
                             signed_id_pk = ph.pk.into();
                             relay_server = ph.relay_server;
+                            // A symmetric / full-tunnel-VPN peer can never be hole
+                            // punched. Latch force-relay so the reconnect (and every
+                            // future connect) takes the clean, single-uuid relay path
+                            // -- the same one the manual "Always relay" toggle uses --
+                            // instead of racing punch+relay every ~7s (the relay-off
+                            // "stream closed" loop). This also persists to the peer
+                            // config (force-always-relay) via save_config on peer info.
+                            if !is_local
+                                && peer_nat_type == NatType::SYMMETRIC
+                                && !interface.is_force_relay()
+                            {
+                                log::info!(
+                                    "peer {} is SYMMETRIC; latching force-relay to avoid punch/relay loop",
+                                    peer
+                                );
+                                interface.get_lch().write().unwrap().force_relay = true;
+                            }
                             peer_addr = AddrMangle::decode(&ph.socket_addr);
                             // [ICE experiment] punch to the candidate the controlled peer
                             // chose (host for same-network, srflx otherwise); it is directly
