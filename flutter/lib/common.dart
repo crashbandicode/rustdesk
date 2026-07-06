@@ -21,7 +21,7 @@ import 'package:flutter_svg/flutter_svg.dart';
 import 'package:get/get.dart';
 import 'package:get/get_rx/src/rx_workers/utils/debouncer.dart';
 import 'package:provider/provider.dart';
-import 'package:uni_links/uni_links.dart';
+import 'package:app_links/app_links.dart';
 import 'package:url_launcher/url_launcher.dart';
 import 'package:uuid/uuid.dart';
 import 'package:wakelock_plus/wakelock_plus.dart';
@@ -381,7 +381,8 @@ class MyTheme {
     appBarTheme: AppBarTheme(
       shadowColor: Colors.transparent,
     ),
-    dialogTheme: DialogTheme(
+    dialogTheme: DialogThemeData(
+      backgroundColor: Colors.white,
       elevation: 15,
       shape: RoundedRectangleBorder(
         borderRadius: BorderRadius.circular(18.0),
@@ -412,7 +413,7 @@ class MyTheme {
     cardColor: grayBg,
     hintColor: Color(0xFFAAAAAA),
     visualDensity: VisualDensity.adaptivePlatformDensity,
-    tabBarTheme: const TabBarTheme(
+    tabBarTheme: const TabBarThemeData(
       labelColor: Colors.black87,
     ),
     tooltipTheme: tooltipTheme(),
@@ -479,7 +480,8 @@ class MyTheme {
     appBarTheme: AppBarTheme(
       shadowColor: Colors.transparent,
     ),
-    dialogTheme: DialogTheme(
+    dialogTheme: DialogThemeData(
+      backgroundColor: Color(0xFF18191E),
       elevation: 15,
       shape: RoundedRectangleBorder(
         borderRadius: BorderRadius.circular(18.0),
@@ -513,7 +515,7 @@ class MyTheme {
     ),
     cardColor: Color(0xFF24252B),
     visualDensity: VisualDensity.adaptivePlatformDensity,
-    tabBarTheme: const TabBarTheme(
+    tabBarTheme: const TabBarThemeData(
       labelColor: Colors.white70,
     ),
     tooltipTheme: tooltipTheme(),
@@ -2191,6 +2193,7 @@ Future<bool> restoreWindowPosition(WindowType type,
 }
 
 var webInitialLink = "";
+final appLinks = AppLinks();
 
 /// Initialize uni links for macos/windows
 ///
@@ -2203,7 +2206,7 @@ Future<bool> initUniLinks() async {
   }
   // check cold boot
   try {
-    final initialLink = await getInitialLink();
+    final initialLink = await appLinks.getInitialLinkString();
     print("initialLink: $initialLink");
     if (initialLink == null || initialLink.isEmpty) {
       return false;
@@ -2230,16 +2233,12 @@ StreamSubscription? listenUniLinks({handleByFlutter = true}) {
     return null;
   }
 
-  final sub = uriLinkStream.listen((Uri? uri) {
+  final sub = appLinks.uriLinkStream.listen((Uri uri) {
     debugPrint("A uri was received: $uri. handleByFlutter $handleByFlutter");
-    if (uri != null) {
-      if (handleByFlutter) {
-        handleUriLink(uri: uri);
-      } else {
-        bind.sendUrlScheme(url: uri.toString());
-      }
+    if (handleByFlutter) {
+      handleUriLink(uri: uri);
     } else {
-      print("uni listen error: uri is empty.");
+      bind.sendUrlScheme(url: uri.toString());
     }
   }, onError: (err) {
     print("uni links error: $err");
