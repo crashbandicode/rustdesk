@@ -88,10 +88,14 @@ jobs:
         run: |
           cargo install cargo-expand --version ${{ env.CARGO_EXPAND_VERSION }} --locked
           cargo install flutter_rust_bridge_codegen --version ${{ env.FLUTTER_RUST_BRIDGE_VERSION }} --features "uuid" --locked
-          # extended_text 14 needs a newer Dart than 3.22.3; downgrade for resolution only.
-          sed -i -e 's/extended_text: 14.0.0/extended_text: 13.0.0/g' flutter/pubspec.yaml
+          # Newer app dependencies require a newer Dart than this bridge-only SDK.
+          sed -i -e 's/extended_text: 15.0.2/extended_text: 13.0.0/g' flutter/pubspec.yaml
+          sed -i -e 's/google_fonts: \^8.1.0/google_fonts: ^6.2.1/g' flutter/pubspec.yaml
           # qr_code_scanner_plus 2.2 needs Dart 3.12; bridge output does not depend on it.
           sed -i -e 's/qr_code_scanner_plus: \^2.2.0/qr_code_scanner_plus: ^2.0.14/g' flutter/pubspec.yaml
+          # The bridge generator runs Flutter 3.22/Dart 3.4.
+          sed -i -e 's/flutter_plugin_android_lifecycle: 2.0.35/flutter_plugin_android_lifecycle: 2.0.22/g' flutter/pubspec.yaml
+          sed -i -e 's/app_links: \^7.2.0/app_links: ^6.2.0/g' flutter/pubspec.yaml
           pushd flutter && flutter pub get && popd
 
       - name: Run flutter rust bridge
@@ -157,9 +161,36 @@ jobs:
       - name: Patch flutter
         shell: bash
         run: |
-          cp .github/patches/flutter_3.24.4_dropdown_menu_enableFilter.diff $(dirname $(dirname $(which flutter)))
-          cd $(dirname $(dirname $(which flutter)))
-          [[ "3.24.5" == ${{ env.FLUTTER_VERSION }} ]] && git apply flutter_3.24.4_dropdown_menu_enableFilter.diff
+          if [[ "3.24.5" == "${{ env.FLUTTER_VERSION }}" ]]; then
+            flutter_root=$(dirname $(dirname $(which flutter)))
+            patch_file="${{ github.workspace }}/.github/patches/flutter_3.24.4_dropdown_menu_enableFilter.diff"
+            cd "$flutter_root"
+            # flutter-action caches the SDK, including this source patch. Apply it once,
+            # but accept an already-patched cache on later runs.
+            if git apply --check "$patch_file"; then
+              git apply "$patch_file"
+            elif git apply --reverse --check "$patch_file"; then
+              echo "Flutter dropdown patch is already applied"
+            else
+              echo "Flutter dropdown patch is neither applicable nor already applied" >&2
+              exit 1
+            fi
+          fi
+
+      - name: Prepare Windows Flutter dependencies
+        shell: bash
+        run: |
+          # The custom RustDesk x64 engine is tied to Flutter 3.24/Dart 3.5.
+          # Use the maintained scanner fork's compatible release for this job;
+          # Android stays on 2.2.0 with Flutter 3.44/Dart 3.12.
+          sed -i -e 's/qr_code_scanner_plus: \^2.2.0/qr_code_scanner_plus: ^2.0.14/g' flutter/pubspec.yaml
+          sed -i -e 's/flutter_plugin_android_lifecycle: 2.0.35/flutter_plugin_android_lifecycle: 2.0.26/g' flutter/pubspec.yaml
+          sed -i -e 's/app_links: \^7.2.0/app_links: ^6.4.1/g' flutter/pubspec.yaml
+          sed -i -e 's/extended_text: 15.0.2/extended_text: 14.0.0/g' flutter/pubspec.yaml
+          sed -i -e 's/sqflite: \^2.4.3/sqflite: ^2.4.1/g' flutter/pubspec.yaml
+          sed -i -e 's/google_fonts: \^8.1.0/google_fonts: ^6.2.1/g' flutter/pubspec.yaml
+          sed -i -e 's/dialogTheme: DialogThemeData(/dialogTheme: DialogTheme(/g' flutter/lib/common.dart
+          sed -i -e 's/tabBarTheme: const TabBarThemeData(/tabBarTheme: const TabBarTheme(/g' flutter/lib/common.dart
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9 # v1
