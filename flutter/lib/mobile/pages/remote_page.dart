@@ -350,13 +350,31 @@ class _RemotePageState extends State<RemotePage> with WidgetsBindingObserver {
             oldValue[common] == newValue[common];
         ++common) {}
 
+    // Type the changed tail of the new value.
+    final content = newValue.substring(common);
+
+    // While the IME still has an active composing region (the underlined,
+    // not-yet-committed word), Gboard needs that region intact to keep showing
+    // the autocorrect/suggestion strip. Backspacing + retyping earlier letters
+    // mid-composition (which the common-prefix diff above does for corrections)
+    // destroys the region, so the suggestions disappear. Defer until the change
+    // no longer fits inside the composition (i.e. the word commits), matching the
+    // iOS handler; on the next callback oldValue is this deferred value so the
+    // committed correction is still diffed and sent (backtrack fix preserved).
+    if (_textController.value.isComposingRangeValid) {
+      final composingLength = _textController.value.composing.end -
+          _textController.value.composing.start;
+      if (composingLength > content.length) {
+        _value = oldValue;
+        return;
+      }
+    }
+
     // Delete the changed tail of the old value.
     for (var i = 0; i < oldValue.length - common; ++i) {
       inputModel.inputKey('VK_BACK');
     }
 
-    // Type the changed tail of the new value.
-    final content = newValue.substring(common);
     if (content.isEmpty) {
       return;
     }
