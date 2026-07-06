@@ -282,17 +282,16 @@ jobs:
             core.exportVariable('ACTIONS_CACHE_URL', process.env.ACTIONS_CACHE_URL || '');
             core.exportVariable('ACTIONS_RUNTIME_TOKEN', process.env.ACTIONS_RUNTIME_TOKEN || '');
 
-      - name: Install dependencies
+      - name: Verify preinstalled Android build tools
         run: |
-          sudo apt-get update
-          sudo apt-get install -y \
-               clang cmake curl gcc-multilib git g++ g++-multilib \
-               libayatana-appindicator3-dev libasound2-dev libc6-dev \
-               libclang-dev libunwind-dev libgstreamer1.0-dev \
-               libgstreamer-plugins-base1.0-dev libgtk-3-dev libpam0g-dev \
-               libpulse-dev libva-dev libxcb-randr0-dev libxcb-shape0-dev \
-               libxcb-xfixes0-dev libxdo-dev libxfixes-dev llvm-dev nasm \
-               ninja-build openjdk-17-jdk-headless pkg-config tree wget
+          # ubuntu-24.04 already ships the Android host toolchain. Avoid a full
+          # Linux desktop dependency install (GTK/GStreamer/Pulse/X11) in this
+          # cross-compile job and fail quickly if the runner image ever changes.
+          command -v clang
+          command -v cmake
+          command -v ninja
+          command -v java
+          command -v pkg-config
 
       - name: Checkout source code
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
