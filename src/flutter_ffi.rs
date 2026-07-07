@@ -659,6 +659,22 @@ pub fn session_input_string(session_id: SessionID, value: String) {
     }
 }
 
+/// Apply a mobile IME correction as one ordered native operation.
+pub fn session_apply_input_edit(
+    session_id: SessionID,
+    delete_count: u32,
+    value: String,
+    alt: bool,
+    ctrl: bool,
+    shift: bool,
+    command: bool,
+) -> SyncReturn<()> {
+    if let Some(session) = sessions::get_session_by_session_id(&session_id) {
+        session.apply_input_edit(delete_count, &value, alt, ctrl, shift, command);
+    }
+    SyncReturn(())
+}
+
 // chat_client_mode
 pub fn session_send_chat(session_id: SessionID, text: String) {
     if let Some(session) = sessions::get_session_by_session_id(&session_id) {
