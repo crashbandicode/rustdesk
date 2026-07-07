@@ -46,7 +46,10 @@ jobs:
             ./flutter/lib/generated_bridge.dart
             ./flutter/lib/generated_bridge.freezed.dart
             ./flutter/macos/Runner/bridge_generated.h
-          key: bridge-output-v1-${{ env.BRIDGE_FLUTTER_VERSION }}-${{ env.FLUTTER_RUST_BRIDGE_VERSION }}-${{ hashFiles('src/**/*.rs', 'libs/hbb_common/protos/**/*.proto', 'Cargo.lock') }}
+          # Bridge output depends on the exported FFI surface and shared Flutter
+          # types, not every Rust implementation file. Keeping normal client/ICE
+          # edits out of this key avoids a serial codegen job on most builds.
+          key: bridge-output-v2-${{ env.BRIDGE_FLUTTER_VERSION }}-${{ env.FLUTTER_RUST_BRIDGE_VERSION }}-${{ hashFiles('src/flutter_ffi.rs', 'src/flutter.rs', 'libs/hbb_common/protos/**/*.proto', 'Cargo.lock') }}
 
       - name: Install prerequisites
         if: steps.bridge-output-cache.outputs.cache-hit != 'true'

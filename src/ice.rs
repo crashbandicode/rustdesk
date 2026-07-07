@@ -51,6 +51,10 @@ const ATTR_XOR_MAPPED_ADDRESS: u16 = 0x0020;
 pub const OPTION_ENABLE_ICE: &str = "enable-ice";
 /// Config option name for overriding the STUN server used for srflx discovery.
 pub const OPTION_STUN_SERVER: &str = "custom-stun-server";
+/// Per-peer marker for the relay policy that no longer persists automatic
+/// symmetric-NAT decisions as the user's "Always relay" preference.
+pub const RELAY_POLICY_VERSION_OPTION: &str = "ice-relay-policy-version";
+pub const RELAY_POLICY_VERSION: &str = "2";
 
 /// Whether the experimental ICE traversal path is enabled.
 ///
@@ -311,6 +315,48 @@ pub fn same_lan_v4(a: std::net::Ipv4Addr, b: std::net::Ipv4Addr) -> bool {
     a.is_private() && b.is_private() && a.octets()[..3] == b.octets()[..3]
 }
 
+/// Whether the OS has a directly-connected private route to this candidate.
+/// This is stronger than the rendezvous `is_local` bit, which is unreliable
+/// behind a WebSocket reverse proxy such as Cloudflare.
+pub fn is_direct_lan_candidate(peer: SocketAddr) -> bool {
+    match (peer.ip(), source_ip_for(peer.ip())) {
+        (std::net::IpAddr::V4(peer), Some(std::net::IpAddr::V4(source))) => {
+            same_lan_v4(source, peer)
+        }
+        _ => false,
+    }
+}
+
+/// A symmetric peer should relay immediately unless ICE has already selected
+/// a directly-reachable LAN candidate. LAN reachability outranks NAT type: a
+/// full-tunnel VPN can be symmetric externally while its physical LAN remains
+/// directly reachable.
+pub fn should_auto_force_relay(
+    is_local: bool,
+    peer_is_symmetric: bool,
+    already_force_relay: bool,
+    has_direct_lan_candidate: bool,
+) -> bool {
+    !is_local && peer_is_symmetric && !already_force_relay && !has_direct_lan_candidate
+}
+
+/// Remove the legacy auto-persisted relay flag once. After this marker is
+/// stored, a user can explicitly enable "Always relay" again and it will be
+/// respected because subsequent loads no longer migrate the option.
+pub fn migrate_legacy_relay_policy(
+    options: &mut std::collections::HashMap<String, String>,
+) -> bool {
+    if options.get(RELAY_POLICY_VERSION_OPTION).map(String::as_str) == Some(RELAY_POLICY_VERSION) {
+        return false;
+    }
+    options.remove("force-always-relay");
+    options.insert(
+        RELAY_POLICY_VERSION_OPTION.to_owned(),
+        RELAY_POLICY_VERSION.to_owned(),
+    );
+    true
+}
+
 /// Encode host + srflx candidates into the single signaling string.
 pub fn encode_candidates(hosts: &[String], srflx: Option<&str>) -> String {
     let mut parts = Vec::new();
@@ -404,6 +450,34 @@ mod tests {
             Ipv4Addr::new(8, 8, 8, 8),
             Ipv4Addr::new(8, 8, 8, 9)
         ));
+    }
+
+    #[test]
+    fn direct_lan_candidate_outranks_symmetric_nat() {
+        assert!(!should_auto_force_relay(false, true, false, true));
+        assert!(should_auto_force_relay(false, true, false, false));
+        assert!(!should_auto_force_relay(true, true, false, false));
+        assert!(!should_auto_force_relay(false, true, true, false));
+        assert!(!should_auto_force_relay(false, false, false, false));
+    }
+
+    #[test]
+    fn legacy_auto_relay_flag_is_migrated_only_once() {
+        let mut options =
+            std::collections::HashMap::from([("force-always-relay".to_owned(), "Y".to_owned())]);
+        assert!(migrate_legacy_relay_policy(&mut options));
+        assert!(!options.contains_key("force-always-relay"));
+        assert_eq!(
+            options.get(RELAY_POLICY_VERSION_OPTION).map(String::as_str),
+            Some(RELAY_POLICY_VERSION)
+        );
+
+        options.insert("force-always-relay".to_owned(), "Y".to_owned());
+        assert!(!migrate_legacy_relay_policy(&mut options));
+        assert_eq!(
+            options.get("force-always-relay").map(String::as_str),
+            Some("Y")
+        );
     }
 
     // RFC 5769 section 2.1/2.2 sample: XOR-MAPPED-ADDRESS decodes to
