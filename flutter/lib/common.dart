@@ -1,6 +1,5 @@
 import 'dart:async';
 import 'dart:convert';
-import 'dart:math';
 
 import 'package:back_button_interceptor/back_button_interceptor.dart';
 import 'package:desktop_multi_window/desktop_multi_window.dart';
@@ -40,6 +39,7 @@ import 'desktop/pages/view_camera_page.dart' as desktop_view_camera;
 import 'package:flutter_hbb/desktop/widgets/remote_toolbar.dart';
 import 'models/model.dart';
 import 'models/platform_model.dart';
+import 'update_policy.dart';
 
 import 'package:flutter_hbb/native/win32.dart'
     if (dart.library.html) 'package:flutter_hbb/web/win32.dart';
@@ -4065,20 +4065,27 @@ void earlyAssert() {
 }
 
 void checkUpdate() {
-  if (!isWeb) {
-    if (!bind.isCustomClient()) {
-      platformFFI.registerEventHandler(
-          kCheckSoftwareUpdateFinish, kCheckSoftwareUpdateFinish,
-          (Map<String, dynamic> evt) async {
-        if (evt['url'] is String) {
-          stateGlobal.updateUrl.value = evt['url'];
-        }
-      });
-      Timer(const Duration(seconds: 1), () async {
-        bind.mainGetSoftwareUpdateUrl();
-      });
-    }
+  if (isWeb) {
+    return;
   }
+  if (!shouldCheckForSoftwareUpdates(
+    isCustomClient: bind.isCustomClient(),
+    buildIdentity: bind.mainGetBuildIdentitySync(),
+  )) {
+    // Clear any in-memory result emitted before the fork policy was evaluated.
+    stateGlobal.updateUrl.value = '';
+    return;
+  }
+  platformFFI.registerEventHandler(
+      kCheckSoftwareUpdateFinish, kCheckSoftwareUpdateFinish,
+      (Map<String, dynamic> evt) async {
+    if (evt['url'] is String) {
+      stateGlobal.updateUrl.value = evt['url'];
+    }
+  });
+  Timer(const Duration(seconds: 1), () async {
+    bind.mainGetSoftwareUpdateUrl();
+  });
 }
 
 // https://github.com/flutter/flutter/issues/153560#issuecomment-2497160535
