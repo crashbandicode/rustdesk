@@ -481,6 +481,35 @@ class RustdeskImpl {
         () => js.context.callMethod('setByName', ['input_string', value]));
   }
 
+  Future<void> sessionApplyInputEdit(
+      {required UuidValue sessionId,
+      required int deleteCount,
+      required String value,
+      required bool alt,
+      required bool ctrl,
+      required bool shift,
+      required bool command,
+      dynamic hint}) {
+    return Future(() {
+      for (var i = 0; i < deleteCount; ++i) {
+        js.context.callMethod('setByName', [
+          'input_key',
+          jsonEncode({
+            'name': 'VK_BACK',
+            'press': 'true',
+            if (alt) 'alt': 'true',
+            if (ctrl) 'ctrl': 'true',
+            if (shift) 'shift': 'true',
+            if (command) 'command': 'true'
+          })
+        ]);
+      }
+      if (value.isNotEmpty) {
+        js.context.callMethod('setByName', ['input_string', value]);
+      }
+    });
+  }
+
   Future<void> sessionSendChat(
       {required UuidValue sessionId, required String text, dynamic hint}) {
     return Future(
