@@ -880,7 +880,13 @@ impl RendezvousMediator {
         let result = run_ice_session_after_establish(
             punch_timeout_ms,
             establish_udp_nat(socket, target),
-            move |stream| crate::server::create_tcp_connection(server, stream, target, true, meta),
+            move |(kcp, stream)| async move {
+                // KcpStream owns the endpoint and its UDP I/O task. Keep it alive for the
+                // complete remote-control session; dropping it stops KCP immediately even
+                // though the framed data stream still exists.
+                let _kcp = kcp;
+                crate::server::create_tcp_connection(server, stream, target, true, meta).await
+            },
         )
         .await;
 
@@ -1100,7 +1106,10 @@ async fn udp_nat_listen(
     server: ServerPtr,
     meta: ConnectionMeta,
 ) -> ResultType<()> {
-    let stream = establish_udp_nat(socket, peer_addr).await?;
+    let (kcp, stream) = establish_udp_nat(socket, peer_addr).await?;
+    // The KCP owner drives the UDP endpoint used by `stream` and therefore must
+    // outlive the complete accepted session.
+    let _kcp = kcp;
     crate::server::create_tcp_connection(server, stream, peer_addr_v4, true, meta).await?;
     Ok(())
 }
@@ -1110,7 +1119,7 @@ async fn udp_nat_listen(
 async fn establish_udp_nat(
     socket: Arc<tokio::net::UdpSocket>,
     peer_addr: SocketAddr,
-) -> ResultType<Stream> {
+) -> ResultType<(crate::kcp_stream::KcpStream, Stream)> {
     let tm = Instant::now();
     let socket_cloned = socket.clone();
     let func = async {
@@ -1122,7 +1131,7 @@ async fn establish_udp_nat(
             res,
         )
         .await?;
-        Ok(stream.1)
+        Ok(stream)
     };
     func.await.map_err(|e: anyhow::Error| {
         anyhow::anyhow!(
@@ -1170,6 +1179,14 @@ fn finish_signaled_ice_attempt(result: ResultType<()>) -> ResultType<()> {
 mod ice_timeout_tests {
     use super::*;
 
+    struct DropProbe(Arc<AtomicBool>);
+
+    impl Drop for DropProbe {
+        fn drop(&mut self) {
+            self.0.store(true, Ordering::SeqCst);
+        }
+    }
+
     #[tokio::test]
     async fn establishment_timeout_does_not_limit_session_lifetime() {
         let started = Instant::now();
@@ -1200,6 +1217,26 @@ mod ice_timeout_tests {
             .unwrap_err()
             .to_string()
             .contains("ICE udp punch timed out"));
+    }
+
+    #[tokio::test]
+    async fn established_transport_owner_lives_for_the_complete_session() {
+        let dropped = Arc::new(AtomicBool::new(false));
+        let probe = DropProbe(dropped.clone());
+
+        let result = run_ice_session_after_establish(
+            20,
+            async { Ok::<_, anyhow::Error>((probe, ())) },
+            |(owner, ())| async move {
+                tokio::time::sleep(Duration::from_millis(30)).await;
+                assert!(!owner.0.load(Ordering::SeqCst));
+                Ok(())
+            },
+        )
+        .await;
+
+        assert!(result.is_ok());
+        assert!(dropped.load(Ordering::SeqCst));
     }
 
     #[test]
