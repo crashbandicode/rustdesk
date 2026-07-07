@@ -872,17 +872,17 @@ impl RendezvousMediator {
         let mut signaling = connect_tcp(&*self.host, CONNECT_TIMEOUT).await?;
         signaling.send(&msg_out).await?;
 
-        // Bound the punch: if traversal fails (e.g. strict/symmetric NAT) don't hang the
-        // session forever — time out so handle_punch_hole falls back to relay.
-        match hbb_common::timeout(
+        // Bound only path establishment. `create_tcp_connection()` owns the full remote
+        // session and intentionally does not return until that session closes; putting it
+        // under this timeout tears down every healthy LAN P2P connection after four seconds.
+        // Once KCP is established, let the session live normally. A real establishment
+        // failure still returns here promptly so `handle_punch_hole` can request relay.
+        run_ice_session_after_establish(
             punch_timeout_ms,
-            udp_nat_listen(socket, target, target, server, meta),
+            establish_udp_nat(socket, target),
+            move |stream| crate::server::create_tcp_connection(server, stream, target, true, meta),
         )
         .await
-        {
-            Ok(r) => r,
-            Err(_) => bail!("ICE udp punch timed out; falling back to relay"),
-        }
     }
 
     async fn register_pk(&mut self, socket: Sink<'_>) -> ResultType<()> {
@@ -1092,6 +1092,17 @@ async fn udp_nat_listen(
     server: ServerPtr,
     meta: ConnectionMeta,
 ) -> ResultType<()> {
+    let stream = establish_udp_nat(socket, peer_addr).await?;
+    crate::server::create_tcp_connection(server, stream, peer_addr_v4, true, meta).await?;
+    Ok(())
+}
+
+/// Establish the punched UDP/KCP transport without taking ownership of the resulting
+/// remote-control session lifetime.
+async fn establish_udp_nat(
+    socket: Arc<tokio::net::UdpSocket>,
+    peer_addr: SocketAddr,
+) -> ResultType<Stream> {
     let tm = Instant::now();
     let socket_cloned = socket.clone();
     let func = async {
@@ -1103,8 +1114,7 @@ async fn udp_nat_listen(
             res,
         )
         .await?;
-        crate::server::create_tcp_connection(server, stream.1, peer_addr_v4, true, meta).await?;
-        Ok(())
+        Ok(stream.1)
     };
     func.await.map_err(|e: anyhow::Error| {
         anyhow::anyhow!(
@@ -1112,8 +1122,64 @@ async fn udp_nat_listen(
             socket_cloned.local_addr(),
             tm.elapsed()
         )
-    })?;
-    Ok(())
+    })
+}
+
+/// Apply the ICE deadline to establishment only, then run the accepted session outside it.
+/// Kept generic so the timeout boundary has a deterministic regression test without requiring
+/// a live KCP peer.
+async fn run_ice_session_after_establish<T, Establish, Run, Session>(
+    timeout_ms: u64,
+    establish: Establish,
+    run_session: Run,
+) -> ResultType<()>
+where
+    Establish: std::future::Future<Output = ResultType<T>>,
+    Run: FnOnce(T) -> Session,
+    Session: std::future::Future<Output = ResultType<()>>,
+{
+    let established = match hbb_common::timeout(timeout_ms, establish).await {
+        Ok(result) => result?,
+        Err(_) => bail!("ICE udp punch timed out; falling back to relay"),
+    };
+    run_session(established).await
+}
+
+#[cfg(test)]
+mod ice_timeout_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn establishment_timeout_does_not_limit_session_lifetime() {
+        let started = Instant::now();
+        let result =
+            run_ice_session_after_establish(20, async { Ok::<(), anyhow::Error>(()) }, |_| async {
+                tokio::time::sleep(Duration::from_millis(60)).await;
+                Ok(())
+            })
+            .await;
+
+        assert!(result.is_ok());
+        assert!(started.elapsed() >= Duration::from_millis(50));
+    }
+
+    #[tokio::test]
+    async fn failed_establishment_still_times_out_for_relay() {
+        let result = run_ice_session_after_establish(
+            10,
+            async {
+                tokio::time::sleep(Duration::from_millis(60)).await;
+                Ok::<(), anyhow::Error>(())
+            },
+            |_| async { Ok(()) },
+        )
+        .await;
+
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("ICE udp punch timed out"));
+    }
 }
 
 // When config is not yet synced from root, register_pk may have already been sent with a new generated pk.
