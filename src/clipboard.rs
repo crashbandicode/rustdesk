@@ -621,6 +621,48 @@ mod proto {
         message_proto::{Clipboard, ClipboardFormat, Message, MultiClipboards},
     };
 
+    #[cfg(any(target_os = "windows", test))]
+    const MAX_KEYBOARD_IMAGE_BYTES: usize = 16 * 1024 * 1024;
+    #[cfg(any(target_os = "windows", test))]
+    const MAX_KEYBOARD_IMAGE_DIMENSION: u32 = 8_192;
+    #[cfg(any(target_os = "windows", test))]
+    const MAX_KEYBOARD_IMAGE_PIXELS: u64 = 40_000_000;
+
+    /// Decode a keyboard-provided PNG under explicit allocation and dimension limits.
+    /// Windows needs RGBA here because arboard publishes both PNG and CF_DIBV5 for
+    /// `ImageData::Rgba`, while `ImageData::Png` only exposes the registered PNG format.
+    #[cfg(any(target_os = "windows", test))]
+    fn keyboard_png_to_rgba(data: &[u8]) -> Option<(usize, usize, Vec<u8>)> {
+        if data.is_empty() || data.len() > MAX_KEYBOARD_IMAGE_BYTES {
+            return None;
+        }
+
+        let dimensions =
+            image::io::Reader::with_format(std::io::Cursor::new(data), image::ImageFormat::Png)
+                .into_dimensions()
+                .ok()?;
+        let (width, height) = dimensions;
+        let pixels = u64::from(width).checked_mul(u64::from(height))?;
+        if width == 0
+            || height == 0
+            || width > MAX_KEYBOARD_IMAGE_DIMENSION
+            || height > MAX_KEYBOARD_IMAGE_DIMENSION
+            || pixels > MAX_KEYBOARD_IMAGE_PIXELS
+        {
+            return None;
+        }
+
+        let mut limits = image::io::Limits::default();
+        limits.max_image_width = Some(MAX_KEYBOARD_IMAGE_DIMENSION);
+        limits.max_image_height = Some(MAX_KEYBOARD_IMAGE_DIMENSION);
+        limits.max_alloc = Some(MAX_KEYBOARD_IMAGE_PIXELS * 4);
+        let mut reader =
+            image::io::Reader::with_format(std::io::Cursor::new(data), image::ImageFormat::Png);
+        reader.limits(limits);
+        let rgba = reader.decode().ok()?.into_rgba8();
+        Some((width as usize, height as usize, rgba.into_raw()))
+    }
+
     fn plain_to_proto(s: String, format: ClipboardFormat) -> Clipboard {
         let compressed = compress_func(s.as_bytes());
         let compress = compressed.len() < s.as_bytes().len();
@@ -724,29 +766,42 @@ mod proto {
 
     #[cfg(not(target_os = "android"))]
     fn from_clipboard(clipboard: Clipboard) -> Option<ClipboardData> {
+        let format = clipboard.format.enum_value();
+        let width = clipboard.width;
+        let height = clipboard.height;
+        let special_name = clipboard.special_name;
+        #[cfg(target_os = "windows")]
+        let is_keyboard_image = special_name == super::KEYBOARD_IMAGE_PASTE_MARKER;
         let data = if clipboard.compress {
             decompress(&clipboard.content)
         } else {
             clipboard.content.into()
         };
-        match clipboard.format.enum_value() {
+        match format {
             Ok(ClipboardFormat::Text) => String::from_utf8(data).ok().map(ClipboardData::Text),
             Ok(ClipboardFormat::Rtf) => String::from_utf8(data).ok().map(ClipboardData::Rtf),
             Ok(ClipboardFormat::Html) => String::from_utf8(data).ok().map(ClipboardData::Html),
             Ok(ClipboardFormat::ImageRgba) => Some(ClipboardData::Image(arboard::ImageData::rgba(
-                clipboard.width as _,
-                clipboard.height as _,
+                width as _,
+                height as _,
                 data.into(),
             ))),
             Ok(ClipboardFormat::ImagePng) => {
+                #[cfg(target_os = "windows")]
+                if is_keyboard_image {
+                    let (width, height, rgba) = keyboard_png_to_rgba(&data)?;
+                    return Some(ClipboardData::Image(arboard::ImageData::rgba(
+                        width,
+                        height,
+                        rgba.into(),
+                    )));
+                }
                 Some(ClipboardData::Image(arboard::ImageData::png(data.into())))
             }
             Ok(ClipboardFormat::ImageSvg) => Some(ClipboardData::Image(arboard::ImageData::svg(
                 std::str::from_utf8(&data).unwrap_or_default(),
             ))),
-            Ok(ClipboardFormat::Special) => {
-                Some(ClipboardData::Special((clipboard.special_name, data)))
-            }
+            Ok(ClipboardFormat::Special) => Some(ClipboardData::Special((special_name, data))),
             _ => None,
         }
     }
@@ -757,6 +812,42 @@ mod proto {
             .into_iter()
             .filter_map(from_clipboard)
             .collect()
+    }
+
+    #[cfg(all(test, not(target_os = "android")))]
+    mod tests {
+        use super::*;
+        use image::{ImageBuffer, ImageOutputFormat, Rgba};
+
+        fn encode_png(width: u32, height: u32) -> Vec<u8> {
+            let image = ImageBuffer::from_pixel(width, height, Rgba([12, 34, 56, 255]));
+            let mut output = std::io::Cursor::new(Vec::new());
+            image::DynamicImage::ImageRgba8(image)
+                .write_to(&mut output, ImageOutputFormat::Png)
+                .unwrap();
+            output.into_inner()
+        }
+
+        #[test]
+        fn keyboard_png_decodes_to_bounded_rgba() {
+            let png = encode_png(2, 3);
+            let (width, height, rgba) = keyboard_png_to_rgba(&png).unwrap();
+            assert_eq!((width, height), (2, 3));
+            assert_eq!(rgba.len(), 2 * 3 * 4);
+            assert_eq!(&rgba[..4], &[12, 34, 56, 255]);
+        }
+
+        #[test]
+        fn keyboard_png_rejects_oversized_dimensions() {
+            let png = encode_png(MAX_KEYBOARD_IMAGE_DIMENSION + 1, 1);
+            assert!(keyboard_png_to_rgba(&png).is_none());
+        }
+
+        #[test]
+        fn keyboard_png_rejects_invalid_or_oversized_payloads() {
+            assert!(keyboard_png_to_rgba(b"not a png").is_none());
+            assert!(keyboard_png_to_rgba(&vec![0; MAX_KEYBOARD_IMAGE_BYTES + 1]).is_none());
+        }
     }
 
     pub fn get_msg_if_not_support_multi_clip(

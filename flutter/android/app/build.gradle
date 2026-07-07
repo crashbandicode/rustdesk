@@ -134,6 +134,7 @@ flutter {
 
 dependencies {
     implementation 'com.google.protobuf:protobuf-javalite:3.20.1'
+    implementation 'androidx.core:core:1.13.1'
     implementation "androidx.media:media:1.6.0"
     implementation 'com.github.getActivity:XXPermissions:18.5'
     implementation("org.jetbrains.kotlin:kotlin-stdlib") { version { strictly("2.3.20") } }
