@@ -800,6 +800,7 @@ impl RendezvousMediator {
         // usable same-network pair, and we advertise that exact source back.
         let mut chosen: Option<(SocketAddr, String, u64)> = None;
         let mut is_symmetric = false;
+        let mut endpoint_independent_mapping = false;
         for ph in &peer.hosts {
             if let (std::net::IpAddr::V4(pv4), Some(std::net::IpAddr::V4(src))) =
                 (ph.ip(), crate::ice::source_ip_for(ph.ip()))
@@ -834,7 +835,27 @@ impl RendezvousMediator {
                             // doomed punch -> keep our own wait tiny, we relay
                             chosen = Some((ps, my_srflx.to_string(), 1_000));
                         }
-                        _ => {
+                        Ok(b) if b == my_srflx => {
+                            endpoint_independent_mapping = true;
+                            log::info!(
+                                "ICE: endpoint-independent NAT mapping {}; attempting srflx P2P",
+                                my_srflx
+                            );
+                            chosen = Some((ps, my_srflx.to_string(), 3_000));
+                        }
+                        Ok(b) => {
+                            log::info!(
+                                "ICE: inconclusive NAT mapping probe ({} vs {}); attempting srflx P2P",
+                                my_srflx,
+                                b
+                            );
+                            chosen = Some((ps, my_srflx.to_string(), 3_000));
+                        }
+                        Err(err) => {
+                            log::info!(
+                                "ICE: second STUN probe failed ({}); attempting srflx P2P",
+                                err
+                            );
                             log::info!("ICE: srflx punch {} -> {}", my_srflx, ps);
                             chosen = Some((ps, my_srflx.to_string(), 3_000));
                         }
@@ -850,13 +871,15 @@ impl RendezvousMediator {
         let (target, my_cand, punch_timeout_ms) = chosen.expect("candidate chosen above");
 
         use hbb_common::protobuf::Enum;
-        // Report SYMMETRIC when detected so the initiator relays fast; otherwise pass
-        // through our configured NAT type.
-        let nat_type = if is_symmetric {
-            NatType::SYMMETRIC
-        } else {
-            NatType::from_i32(Config::get_nat_type()).unwrap_or(NatType::UNKNOWN_NAT)
-        };
+        // Report a live symmetric result so the initiator relays fast, or a live EIM
+        // result so a stale WSS-era configured value cannot suppress viable srflx P2P.
+        let configured_nat_type =
+            NatType::from_i32(Config::get_nat_type()).unwrap_or(NatType::UNKNOWN_NAT);
+        let nat_type = reported_ice_nat_type(
+            is_symmetric,
+            endpoint_independent_mapping,
+            configured_nat_type,
+        );
         let msg_punch = PunchHoleSent {
             socket_addr: initiator_socket_addr,
             id: Config::get_id(),
@@ -1175,6 +1198,23 @@ fn finish_signaled_ice_attempt(result: ResultType<()>) -> ResultType<()> {
     Ok(())
 }
 
+/// Prefer the live two-provider STUN result over the legacy configured NAT type.
+/// WSS rendezvous cannot perform RustDesk's legacy UDP NAT test, so that stored value
+/// may say `SYMMETRIC` even when two current STUN mappings prove the socket is EIM.
+fn reported_ice_nat_type(
+    is_symmetric: bool,
+    endpoint_independent_mapping: bool,
+    configured: NatType,
+) -> NatType {
+    if is_symmetric {
+        NatType::SYMMETRIC
+    } else if endpoint_independent_mapping {
+        NatType::ASYMMETRIC
+    } else {
+        configured
+    }
+}
+
 #[cfg(test)]
 mod ice_timeout_tests {
     use super::*;
@@ -1243,6 +1283,22 @@ mod ice_timeout_tests {
     fn signaled_failure_yields_to_initiator_relay() {
         let result = finish_signaled_ice_attempt(Err(anyhow::anyhow!("direct path failed")));
         assert!(result.is_ok());
+    }
+
+    #[test]
+    fn live_stun_mapping_overrides_stale_wss_nat_type() {
+        assert_eq!(
+            reported_ice_nat_type(false, true, NatType::SYMMETRIC),
+            NatType::ASYMMETRIC
+        );
+        assert_eq!(
+            reported_ice_nat_type(true, false, NatType::ASYMMETRIC),
+            NatType::SYMMETRIC
+        );
+        assert_eq!(
+            reported_ice_nat_type(false, false, NatType::UNKNOWN_NAT),
+            NatType::UNKNOWN_NAT
+        );
     }
 }
 
