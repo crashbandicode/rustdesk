@@ -22,6 +22,7 @@ import '../../models/input_model.dart';
 import '../../models/model.dart';
 import '../../models/platform_model.dart';
 import '../../utils/image.dart';
+import '../ime_input_diff.dart';
 import '../widgets/dialog.dart';
 import '../widgets/custom_scale_widget.dart';
 
@@ -325,61 +326,27 @@ class _RemotePageState extends State<RemotePage> with WidgetsBindingObserver {
     }
   }
 
-  void _handleNonIOSSoftKeyboardInput(String newValue) {
-    var oldValue = _value;
-    _value = newValue;
-    if (oldValue.isNotEmpty &&
-        newValue.isNotEmpty &&
-        oldValue[0] == '1' &&
-        newValue[0] != '1') {
-      // clipboard
-      oldValue = '';
+  void _handleNonIOSSoftKeyboardInput(String _) {
+    final plan = planAndroidImeEdit(
+      sentValue: _value,
+      editingValue: _textController.value,
+    );
+    if (plan.deferred) {
+      return;
     }
-    // Diff on the common prefix instead of only comparing lengths. The old
-    // length-only logic could not handle IME autocomplete/autocorrect that
-    // rewrites earlier letters: a same-length correction (e.g. "teh" -> "the")
-    // did nothing, and a shorter value only ever emitted a single VK_BACK. Now
-    // we backspace everything past the shared prefix and retype the new tail,
-    // so tapping a suggestion backtracks and fixes the misspelling. This works
-    // with the initText '1'*1024 anchor because the shared prefix includes the
-    // unchanged buffer.
-    var common = 0;
-    for (;
-        common < oldValue.length &&
-            common < newValue.length &&
-            oldValue[common] == newValue[common];
-        ++common) {}
-
-    // Type the changed tail of the new value.
-    final content = newValue.substring(common);
-
-    // While the IME still has an active composing region (the underlined,
-    // not-yet-committed word), Gboard needs that region intact to keep showing
-    // the autocorrect/suggestion strip. Backspacing + retyping earlier letters
-    // mid-composition (which the common-prefix diff above does for corrections)
-    // destroys the region, so the suggestions disappear. Defer until the change
-    // no longer fits inside the composition (i.e. the word commits), matching the
-    // iOS handler; on the next callback oldValue is this deferred value so the
-    // committed correction is still diffed and sent (backtrack fix preserved).
-    if (_textController.value.isComposingRangeValid) {
-      final composingLength = _textController.value.composing.end -
-          _textController.value.composing.start;
-      if (composingLength > content.length) {
-        _value = oldValue;
-        return;
-      }
-    }
+    _value = plan.nextSentValue;
 
     // Delete the changed tail of the old value.
-    for (var i = 0; i < oldValue.length - common; ++i) {
+    for (var i = 0; i < plan.deleteCount; ++i) {
       inputModel.inputKey('VK_BACK');
     }
 
+    final content = plan.insertText;
     if (content.isEmpty) {
       return;
     }
     if (content.length > 1) {
-      if (oldValue.length == common &&
+      if (plan.deleteCount == 0 &&
           content.length == 2 &&
           (content == '""' ||
               content == '()' ||
@@ -711,12 +678,11 @@ class _RemotePageState extends State<RemotePage> with WidgetsBindingObserver {
                   ? Container()
                   : TextFormField(
                       textInputAction: TextInputAction.newline,
-                      autocorrect: false,
-                      // Flutter 3.16.9 Android.
-                      // `enableSuggestions` causes secure keyboard to be shown.
-                      // https://github.com/flutter/flutter/issues/139143
-                      // https://github.com/flutter/flutter/issues/146540
-                      // enableSuggestions: false,
+                      // Android exposes autocorrect and suggestions separately.
+                      // Keep both enabled so prediction and voice composition stay
+                      // active while the hidden input field forwards remote text.
+                      autocorrect: true,
+                      enableSuggestions: true,
                       autofocus: true,
                       focusNode: _mobileFocusNode,
                       maxLines: null,
