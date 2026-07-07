@@ -510,6 +510,14 @@ class RustdeskImpl {
     });
   }
 
+  bool sessionPasteKeyboardImage(
+      {required UuidValue sessionId,
+      required Uint8List png,
+      required bool useCommand,
+      dynamic hint}) {
+    return false;
+  }
+
   Future<void> sessionSendChat(
       {required UuidValue sessionId, required String text, dynamic hint}) {
     return Future(

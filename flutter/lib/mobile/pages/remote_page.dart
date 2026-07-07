@@ -1,5 +1,6 @@
 import 'dart:async';
 
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_hbb/common/shared_state.dart';
@@ -23,6 +24,7 @@ import '../../models/model.dart';
 import '../../models/platform_model.dart';
 import '../../utils/image.dart';
 import '../ime_input_diff.dart';
+import '../keyboard_image_paste.dart';
 import '../widgets/dialog.dart';
 import '../widgets/custom_scale_widget.dart';
 
@@ -183,6 +185,11 @@ class _RemotePageState extends State<RemotePage> with WidgetsBindingObserver {
   void didChangeAppLifecycleState(AppLifecycleState state) {
     if (state == AppLifecycleState.resumed) {
       trySyncClipboard();
+      gFFI.ffiModel.onMobileAppResumed();
+    } else if (state == AppLifecycleState.inactive ||
+        state == AppLifecycleState.hidden ||
+        state == AppLifecycleState.paused) {
+      gFFI.ffiModel.onMobileAppPaused();
     }
   }
 
@@ -365,6 +372,57 @@ class _RemotePageState extends State<RemotePage> with WidgetsBindingObserver {
       // Restart the hidden input after auto-paired punctuation so the closing
       // character is not consumed by the local editor on the next keystroke.
       _openKeyboardUnlocked();
+    }
+  }
+
+  void _handleKeyboardInsertedContent(KeyboardInsertedContent content) {
+    unawaited(_pasteKeyboardImage(content));
+  }
+
+  Future<void> _pasteKeyboardImage(KeyboardInsertedContent content) async {
+    if (!inputModel.keyboardInputAllowed || !inputModel.keyboardPerm) {
+      showToast(translate('Keyboard input is not permitted'));
+      return;
+    }
+    if (gFFI.ffiModel.permissions['clipboard'] == false) {
+      showToast(translate('Clipboard permission is required'));
+      return;
+    }
+
+    final bytes = content.data;
+    if (bytes == null || bytes.isEmpty) {
+      showToast(translate('The keyboard did not provide image data'));
+      return;
+    }
+    if (bytes.length > kMaxKeyboardImageBytes) {
+      showToast(translate('The image is too large to paste'));
+      return;
+    }
+
+    try {
+      final png = await compute(
+        normalizeKeyboardImageToPng,
+        (bytes: bytes, mimeType: content.mimeType),
+      );
+      if (!mounted || png == null) {
+        if (mounted) {
+          showToast(translate('Unable to paste this image'));
+        }
+        return;
+      }
+
+      final pasted = bind.sessionPasteKeyboardImage(
+        sessionId: sessionId,
+        png: png,
+        useCommand: gFFI.ffiModel.pi.platform == kPeerPlatformMacOS,
+      );
+      showToast(translate(
+          pasted ? 'Image pasted on remote device' : 'Unable to paste image'));
+    } catch (e) {
+      debugPrint('Failed to paste keyboard image: $e');
+      if (mounted) {
+        showToast(translate('Unable to paste this image'));
+      }
     }
   }
 
@@ -683,6 +741,11 @@ class _RemotePageState extends State<RemotePage> with WidgetsBindingObserver {
                       // active while the hidden input field forwards remote text.
                       autocorrect: true,
                       enableSuggestions: true,
+                      contentInsertionConfiguration: isAndroid
+                          ? ContentInsertionConfiguration(
+                              onContentInserted: _handleKeyboardInsertedContent,
+                            )
+                          : null,
                       autofocus: true,
                       focusNode: _mobileFocusNode,
                       maxLines: null,
