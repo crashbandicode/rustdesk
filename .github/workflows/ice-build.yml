@@ -71,6 +71,8 @@ jobs:
         if: steps.bridge-output-cache.outputs.cache-hit != 'true'
         with:
           prefix-key: bridge-ubuntu-22.04
+          # Keep build identity (RUSTDESK_BUILD_COMMIT) out of dependency cache keys.
+          env-vars: "CARGO CC CFLAGS CXX CMAKE RUSTC RUSTUP RUSTFLAGS RUSTDOC"
 
       - name: Cache bridge generator binaries
         id: bridge-tools-cache
@@ -223,6 +225,8 @@ jobs:
       - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
         with:
           prefix-key: windows-2022
+          # Keep build identity (RUSTDESK_BUILD_COMMIT) out of dependency cache keys.
+          env-vars: "CARGO CC CFLAGS CXX CMAKE RUSTC RUSTUP RUSTFLAGS RUSTDOC"
 
       - name: Setup vcpkg with Github Actions binary cache
         uses: lukka/run-vcpkg@b1a0dd252f06b9e25b3c022a9a03bd7a427fb6a2 # v11
@@ -399,6 +403,8 @@ jobs:
         with:
           prefix-key: rustdesk-lib-cache-android
           key: aarch64-linux-android
+          # Keep build identity (RUSTDESK_BUILD_COMMIT) out of dependency cache keys.
+          env-vars: "CARGO CC CFLAGS CXX CMAKE RUSTC RUSTUP RUSTFLAGS RUSTDOC"
 
       - name: Build rustdesk lib
         env:
