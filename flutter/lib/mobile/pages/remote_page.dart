@@ -336,35 +336,35 @@ class _RemotePageState extends State<RemotePage> with WidgetsBindingObserver {
     }
     _value = plan.nextSentValue;
 
-    // Delete the changed tail of the old value.
-    for (var i = 0; i < plan.deleteCount; ++i) {
-      inputModel.inputKey('VK_BACK');
-    }
-
     final content = plan.insertText;
-    if (content.isEmpty) {
+    if (!plan.hasRemoteEdit) {
       return;
     }
-    if (content.length > 1) {
-      if (plan.deleteCount == 0 &&
-          content.length == 2 &&
-          (content == '""' ||
-              content == '()' ||
-              content == '[]' ||
-              content == '<>' ||
-              content == "{}" ||
-              content == '”“' ||
-              content == '《》' ||
-              content == '（）' ||
-              content == '【】')) {
-        // can not only input content[0], because when input ], [ are also auo insert, which cause ] never be input
-        bind.sessionInputString(sessionId: sessionId, value: content);
-        _openKeyboardUnlocked();
-        return;
-      }
-      bind.sessionInputString(sessionId: sessionId, value: content);
-    } else {
-      inputChar(content);
+
+    bind.sessionApplyInputEdit(
+      sessionId: sessionId,
+      deleteCount: plan.deleteCount,
+      value: content,
+      alt: inputModel.alt,
+      ctrl: inputModel.ctrl,
+      shift: inputModel.shift,
+      command: inputModel.command,
+    );
+
+    if (plan.deleteCount == 0 &&
+        content.length == 2 &&
+        (content == '""' ||
+            content == '()' ||
+            content == '[]' ||
+            content == '<>' ||
+            content == "{}" ||
+            content == '”“' ||
+            content == '《》' ||
+            content == '（）' ||
+            content == '【】')) {
+      // Restart the hidden input after auto-paired punctuation so the closing
+      // character is not consumed by the local editor on the next keystroke.
+      _openKeyboardUnlocked();
     }
   }
 

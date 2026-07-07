@@ -920,6 +920,40 @@ impl<T: InvokeUiSession> Session<T> {
         self.send(Data::Message(msg_out));
     }
 
+    /// Enqueue one logical mobile IME edit in its required order.
+    ///
+    /// Keeping the delete-and-insert burst on the Rust side prevents a Dart
+    /// rebuild or another asynchronous callback from splitting an autocorrect
+    /// replacement between several FFI calls.
+    pub fn apply_input_edit(
+        &self,
+        delete_count: u32,
+        value: &str,
+        alt: bool,
+        ctrl: bool,
+        shift: bool,
+        command: bool,
+    ) {
+        for _ in 0..delete_count {
+            self.input_key("VK_BACK", false, true, alt, ctrl, shift, command);
+        }
+
+        if value.is_empty() {
+            return;
+        }
+
+        if value.encode_utf16().count() > 1 {
+            self.input_string(value);
+        } else {
+            let key = match value {
+                "\n" => "VK_RETURN",
+                " " => "VK_SPACE",
+                _ => value,
+            };
+            self.input_key(key, false, true, alt, ctrl, shift, command);
+        }
+    }
+
     #[cfg(any(target_os = "ios"))]
     pub fn handle_flutter_raw_key_event(
         &self,
