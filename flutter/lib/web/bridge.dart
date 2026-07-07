@@ -857,6 +857,10 @@ class RustdeskImpl {
     return Future(() => js.context.callMethod('getByName', ['version']));
   }
 
+  String mainGetBuildIdentitySync({dynamic hint}) {
+    return 'crashbandicode/rustdesk ICE fork (UNOFFICIAL) · commit web';
+  }
+
   Future<List<String>> mainGetFav({dynamic hint}) {
     List<String> favs = [];
     try {
