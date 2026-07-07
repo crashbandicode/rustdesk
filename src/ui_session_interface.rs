@@ -52,6 +52,7 @@ use crate::keyboard;
 use crate::{client::Data, client::Interface};
 
 const CHANGE_RESOLUTION_VALID_TIMEOUT_SECS: u64 = 15;
+const MAX_KEYBOARD_IMAGE_BYTES: usize = 16 * 1024 * 1024;
 
 #[derive(Clone, Default)]
 pub struct Session<T: InvokeUiSession> {
@@ -952,6 +953,43 @@ impl<T: InvokeUiSession> Session<T> {
             };
             self.input_key(key, false, true, alt, ctrl, shift, command);
         }
+    }
+
+    /// Put an Android IME image on the peer clipboard and paste it as one
+    /// ordered operation. Both messages use the same session queue, so the
+    /// remote clipboard is updated before Ctrl/Cmd+V is processed.
+    pub fn paste_keyboard_image(&self, png: &[u8], use_command: bool) -> bool {
+        if png.is_empty() || png.len() > MAX_KEYBOARD_IMAGE_BYTES {
+            return false;
+        }
+
+        // Read these independently so this path cannot invert the session and
+        // permission lock order used elsewhere in the input stack.
+        let server_clipboard_enabled = *self.server_clipboard_enabled.read().unwrap();
+        let server_keyboard_enabled = *self.server_keyboard_enabled.read().unwrap();
+        let (clipboard_disabled, view_only) = {
+            let lc = self.lc.read().unwrap();
+            (lc.disable_clipboard.v, lc.view_only.v)
+        };
+        let allowed = server_clipboard_enabled
+            && server_keyboard_enabled
+            && !clipboard_disabled
+            && !view_only;
+        if !allowed {
+            return false;
+        }
+
+        let clipboard = Clipboard {
+            content: Bytes::copy_from_slice(png),
+            format: ClipboardFormat::ImagePng.into(),
+            special_name: crate::clipboard::KEYBOARD_IMAGE_PASTE_MARKER.to_owned(),
+            ..Default::default()
+        };
+        let mut message = Message::new();
+        message.set_clipboard(clipboard);
+        self.send(Data::Message(message));
+        self.input_key("v", false, true, false, !use_command, false, use_command);
+        true
     }
 
     #[cfg(any(target_os = "ios"))]

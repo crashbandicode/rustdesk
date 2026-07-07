@@ -675,6 +675,18 @@ pub fn session_apply_input_edit(
     SyncReturn(())
 }
 
+/// Paste rich image content committed by an Android keyboard on the peer.
+pub fn session_paste_keyboard_image(
+    session_id: SessionID,
+    png: Vec<u8>,
+    use_command: bool,
+) -> SyncReturn<bool> {
+    let pasted = sessions::get_session_by_session_id(&session_id)
+        .map(|session| session.paste_keyboard_image(&png, use_command))
+        .unwrap_or(false);
+    SyncReturn(pasted)
+}
+
 // chat_client_mode
 pub fn session_send_chat(session_id: SessionID, text: String) {
     if let Some(session) = sessions::get_session_by_session_id(&session_id) {

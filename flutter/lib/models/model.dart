@@ -15,6 +15,7 @@ import 'package:flutter_hbb/consts.dart';
 import 'package:flutter_hbb/models/ab_model.dart';
 import 'package:flutter_hbb/models/chat_model.dart';
 import 'package:flutter_hbb/models/cm_file_model.dart';
+import 'package:flutter_hbb/models/connection_policy.dart';
 import 'package:flutter_hbb/models/file_model.dart';
 import 'package:flutter_hbb/models/group_model.dart';
 import 'package:flutter_hbb/models/peer_model.dart';
@@ -125,8 +126,12 @@ class FfiModel with ChangeNotifier {
   late VirtualMouseMode virtualMouseMode;
   Timer? _timer;
   Timer? _restartReconnectDelayTimer;
+  Timer? _transientNetworkReconnectTimer;
   var _reconnects = 1;
   DateTime? _offlineReconnectStartTime;
+  DateTime? _transientNetworkReconnectStartTime;
+  bool _transientNetworkReconnectPending = false;
+  bool _mobileAppBackgrounded = false;
   bool _viewOnly = false;
   bool _showMyCursor = false;
   WeakReference<FFI> parent;
@@ -259,6 +264,7 @@ class FfiModel with ChangeNotifier {
     _timer?.cancel();
     _timer = null;
     resetRestartReconnectState();
+    resetTransientNetworkReconnectState();
     clearPermissions();
     waitForImageTimer?.cancel();
     timerScreenshot?.cancel();
@@ -296,6 +302,12 @@ class FfiModel with ChangeNotifier {
         children: [
           iconWidget,
           SizedBox(height: 4),
+          Text(
+            translate(connectionTransportLabel(direct!)),
+            style: TextStyle(fontSize: 13, fontWeight: FontWeight.w600),
+            textAlign: TextAlign.center,
+          ),
+          SizedBox(height: 2),
           Text(
             connectionText,
             style: TextStyle(fontSize: 12),
@@ -348,8 +360,13 @@ class FfiModel with ChangeNotifier {
       } else if (name == 'sync_platform_additions') {
         handlePlatformAdditions(evt, sessionId, peerId);
       } else if (name == 'connection_ready') {
-        setConnectionType(peerId, evt['secure'] == 'true',
-            evt['direct'] == 'true', evt['stream_type'] ?? '');
+        final direct = evt['direct'] == 'true';
+        setConnectionType(
+            peerId, evt['secure'] == 'true', direct, evt['stream_type'] ?? '');
+        onConnectionReady();
+        if (isMobile && parent.target?.connType == ConnType.defaultConn) {
+          showToast(translate(connectionTransportLabel(direct)));
+        }
         resetRestartReconnectState();
       } else if (name == 'switch_display') {
         // switch display is kept for backward compatibility
@@ -972,6 +989,12 @@ class FfiModel with ChangeNotifier {
       showPrivacyFailedDialog(
           sessionId, type, title, text, link, hasRetry, dialogManager);
     } else {
+      if (isMobile &&
+          isTransientMobileNetworkError(type: type, title: title, text: text) &&
+          shouldContinueTransientNetworkReconnect()) {
+        scheduleTransientNetworkReconnect(dialogManager, sessionId);
+        return;
+      }
       var hasRetry = evt['hasRetry'] == 'true';
       if (!hasRetry) {
         hasRetry = shouldAutoRetryOnOffline(type, title, text);
@@ -983,6 +1006,76 @@ class FfiModel with ChangeNotifier {
   void resetRestartReconnectState() {
     _restartReconnectDelayTimer?.cancel();
     _restartReconnectDelayTimer = null;
+  }
+
+  void resetTransientNetworkReconnectState() {
+    _transientNetworkReconnectTimer?.cancel();
+    _transientNetworkReconnectTimer = null;
+    _transientNetworkReconnectStartTime = null;
+    _transientNetworkReconnectPending = false;
+    _mobileAppBackgrounded = false;
+  }
+
+  bool shouldContinueTransientNetworkReconnect() {
+    final now = DateTime.now();
+    _transientNetworkReconnectStartTime ??= now;
+    return now.difference(_transientNetworkReconnectStartTime!) <
+        kTransientNetworkReconnectWindow;
+  }
+
+  void scheduleTransientNetworkReconnect(
+      OverlayDialogManager dialogManager, SessionID sessionId) {
+    _timer?.cancel();
+    _timer = null;
+    _transientNetworkReconnectTimer?.cancel();
+    _transientNetworkReconnectPending = true;
+
+    final delaySeconds =
+        min(_reconnects, kMaxTransientNetworkReconnectDelaySeconds);
+    _reconnects =
+        min(_reconnects * 2, kMaxTransientNetworkReconnectDelaySeconds);
+
+    dialogManager.dismissAll();
+    dialogManager.showLoading(translate('Connecting...'),
+        onCancel: closeConnection);
+    _transientNetworkReconnectTimer = Timer(
+      Duration(seconds: _mobileAppBackgrounded ? 2 : delaySeconds),
+      () {
+        _transientNetworkReconnectTimer = null;
+        final target = parent.target;
+        if (target == null || target.closed) {
+          resetTransientNetworkReconnectState();
+          return;
+        }
+        reconnect(dialogManager, sessionId, false);
+      },
+    );
+  }
+
+  void onMobileAppPaused() {
+    _mobileAppBackgrounded = true;
+  }
+
+  void onMobileAppResumed() {
+    _mobileAppBackgrounded = false;
+    final target = parent.target;
+    if (!_transientNetworkReconnectPending || target == null || target.closed) {
+      return;
+    }
+    _transientNetworkReconnectStartTime = DateTime.now();
+    _transientNetworkReconnectTimer?.cancel();
+    _transientNetworkReconnectTimer = null;
+    reconnect(target.dialogManager, sessionId, false);
+  }
+
+  void onConnectionReady() {
+    _transientNetworkReconnectTimer?.cancel();
+    _transientNetworkReconnectTimer = null;
+    _transientNetworkReconnectStartTime = null;
+    _transientNetworkReconnectPending = false;
+    _timer?.cancel();
+    _timer = null;
+    _reconnects = 1;
   }
 
   /// Auto-retry check for "Remote desktop is offline" error.
@@ -1176,13 +1269,22 @@ class FfiModel with ChangeNotifier {
 
     if (waitForFirstImage.isFalse) return;
     dialogManager.show(
-      (setState, close, context) => CustomAlertDialog(
-          title: null,
-          content: SelectionArea(child: msgboxContent(type, title, text)),
-          actions: [
-            dialogButton("Cancel", onPressed: onClose, isOutline: true)
-          ],
-          onCancel: onClose),
+      (setState, close, context) {
+        final connection = getConnectionImageText();
+        return CustomAlertDialog(
+            title: null,
+            content: Column(mainAxisSize: MainAxisSize.min, children: [
+              SelectionArea(child: msgboxContent(type, title, text)),
+              if (connection != null) ...[
+                SizedBox(height: 12),
+                connection,
+              ],
+            ]),
+            actions: [
+              dialogButton("Cancel", onPressed: onClose, isOutline: true)
+            ],
+            onCancel: onClose);
+      },
       tag: '$sessionId-waiting-for-image',
     );
     waitForImageDialogShow.value = true;
