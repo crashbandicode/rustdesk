@@ -552,37 +552,61 @@ impl Client {
                         } else {
                             peer_nat_type = ph.nat_type();
                             is_local = ph.is_local();
+                            // Resolve the controlled peer's selected ICE candidate before
+                            // applying the symmetric-NAT shortcut. Cloudflare makes
+                            // rendezvous `is_local` unreliable, while the routing table can
+                            // still prove that a private candidate is on our LAN.
+                            let ice_candidate = if crate::ice::enabled() && !ph.ice_srflx.is_empty()
+                            {
+                                let cands = crate::ice::parse_candidates(&ph.ice_srflx);
+                                cands.hosts.first().copied().or(cands.srflx)
+                            } else {
+                                None
+                            };
+                            let ice_is_direct_lan = ice_candidate
+                                .map(crate::ice::is_direct_lan_candidate)
+                                .unwrap_or(false);
                             signed_id_pk = ph.pk.into();
                             relay_server = ph.relay_server;
                             // A symmetric / full-tunnel-VPN peer can never be hole
                             // punched. Latch force-relay so the reconnect (and every
                             // future connect) takes the clean, single-uuid relay path
-                            // -- the same one the manual "Always relay" toggle uses --
-                            // instead of racing punch+relay every ~7s (the relay-off
-                            // "stream closed" loop). This also persists to the peer
-                            // config (force-always-relay) via save_config on peer info.
-                            if !is_local
-                                && peer_nat_type == NatType::SYMMETRIC
-                                && !interface.is_force_relay()
-                            {
+                            // -- the same runtime path the manual "Always relay" toggle
+                            // uses -- instead of racing punch+relay every ~7s (the
+                            // relay-off "stream closed" loop). Auto-relay is deliberately
+                            // session-only so a later LAN connection can gather candidates.
+                            if crate::ice::should_auto_force_relay(
+                                is_local,
+                                peer_nat_type == NatType::SYMMETRIC,
+                                interface.is_force_relay(),
+                                ice_is_direct_lan,
+                            ) {
                                 log::info!(
                                     "peer {} is SYMMETRIC; latching force-relay to avoid punch/relay loop",
                                     peer
                                 );
-                                interface.get_lch().write().unwrap().force_relay = true;
+                                let lch = interface.get_lch();
+                                let mut lch = lch.write().unwrap();
+                                lch.force_relay = true;
+                                lch.auto_force_relay = true;
                             }
                             peer_addr = AddrMangle::decode(&ph.socket_addr);
                             // [ICE experiment] punch to the candidate the controlled peer
                             // chose (host for same-network, srflx otherwise); it is directly
                             // reachable even though the rendezvous is proxied over WebSocket.
                             let mut ice_is_udp = false;
-                            if crate::ice::enabled() && !ph.ice_srflx.is_empty() {
-                                let cands = crate::ice::parse_candidates(&ph.ice_srflx);
-                                if let Some(a) = cands.hosts.first().copied().or(cands.srflx) {
-                                    peer_addr = a;
-                                    ice_is_udp = true;
-                                    log::info!("ICE: punching to peer candidate {}", peer_addr);
-                                }
+                            if let Some(a) = ice_candidate {
+                                peer_addr = a;
+                                ice_is_udp = true;
+                                log::info!(
+                                    "ICE: punching to peer candidate {}{}",
+                                    peer_addr,
+                                    if ice_is_direct_lan {
+                                        " (direct LAN)"
+                                    } else {
+                                        ""
+                                    }
+                                );
                             }
                             feedback = ph.feedback;
                             let s = udp.0.take();
@@ -1831,6 +1855,10 @@ pub struct LoginConfigHandler {
     // reconnect before the real reboot disconnect.
     restart_remote_device_at: Option<Instant>,
     pub force_relay: bool,
+    /// Runtime-only symmetric-NAT shortcut. Unlike a user's "Always relay"
+    /// choice, this must not be written into the peer config because that would
+    /// suppress future LAN candidate gathering.
+    pub auto_force_relay: bool,
     pub direct: Option<bool>,
     pub received: bool,
     switch_uuid: Option<String>,
@@ -1916,7 +1944,14 @@ impl LoginConfigHandler {
 
         self.id = id;
         self.conn_type = conn_type;
-        let config = self.load_config();
+        let mut config = self.load_config();
+        if crate::ice::enabled() && crate::ice::migrate_legacy_relay_policy(&mut config.options) {
+            log::info!(
+                "migrating peer {} away from legacy auto-persisted force relay",
+                self.id
+            );
+            config.store(&self.id);
+        }
         self.remember = !config.password.is_empty();
         self.config = config;
 
@@ -1949,6 +1984,7 @@ impl LoginConfigHandler {
                 // gathered/advertised. Relay still applies as a fallback if the punch fails.
                 || (use_ws() && !crate::ice::enabled())
                 || Config::is_proxy();
+        self.auto_force_relay = false;
         if let Some((real_id, server, key)) = &self.other_server {
             let other_server_key = self.get_option("other-server-key");
             if !other_server_key.is_empty() && key.is_empty() {
@@ -2665,7 +2701,7 @@ impl LoginConfigHandler {
                     .insert("other-server-key".to_owned(), c.clone());
             }
         }
-        if self.force_relay {
+        if self.force_relay && !self.auto_force_relay {
             config
                 .options
                 .insert("force-always-relay".to_owned(), "Y".to_owned());
