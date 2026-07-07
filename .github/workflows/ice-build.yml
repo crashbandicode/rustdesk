@@ -15,7 +15,7 @@ env:
   RUST_VERSION: "1.75"
   FLUTTER_VERSION: "3.24.5"
   ANDROID_FLUTTER_VERSION: "3.44.4"
-  BRIDGE_FLUTTER_VERSION: "3.22.3"
+  BRIDGE_FLUTTER_VERSION: "3.44.4"
   FLUTTER_RUST_BRIDGE_VERSION: "1.80.1"
   CARGO_EXPAND_VERSION: "1.0.95"
   LLVM_VERSION: "15.0.6"
@@ -70,8 +70,9 @@ jobs:
           prefix-key: bridge-ubuntu-22.04
 
       - name: Cache bridge generator binaries
+        id: bridge-tools-cache
         if: steps.bridge-output-cache.outputs.cache-hit != 'true'
-        uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5
+        uses: actions/cache/restore@caa296126883cff596d87d8935842f9db880ef25 # v5
         with:
           path: |
             ~/.cargo/bin/cargo-expand
@@ -93,22 +94,26 @@ jobs:
           flutter-version: ${{ env.BRIDGE_FLUTTER_VERSION }}
           cache: true
 
-      - name: Install flutter rust bridge deps
+      - name: Install bridge generators
         if: steps.bridge-output-cache.outputs.cache-hit != 'true'
         shell: bash
         run: |
           command -v cargo-expand >/dev/null || cargo install cargo-expand --version ${{ env.CARGO_EXPAND_VERSION }} --locked
           command -v flutter_rust_bridge_codegen >/dev/null || cargo install flutter_rust_bridge_codegen --version ${{ env.FLUTTER_RUST_BRIDGE_VERSION }} --features "uuid" --locked
-          # Newer app dependencies require a newer Dart than this bridge-only SDK.
-          sed -i -e 's/extended_text: 15.0.2/extended_text: 13.0.0/g' flutter/pubspec.yaml
-          sed -i -e 's/google_fonts: \^8.1.0/google_fonts: ^6.2.1/g' flutter/pubspec.yaml
-          # qr_code_scanner_plus 2.2 needs Dart 3.12; bridge output does not depend on it.
-          sed -i -e 's/qr_code_scanner_plus: \^2.2.0/qr_code_scanner_plus: ^2.0.14/g' flutter/pubspec.yaml
-          # The bridge generator runs Flutter 3.22/Dart 3.4.
-          sed -i -e 's/flutter_plugin_android_lifecycle: 2.0.35/flutter_plugin_android_lifecycle: 2.0.22/g' flutter/pubspec.yaml
-          sed -i -e 's/app_links: \^7.2.0/app_links: ^6.2.0/g' flutter/pubspec.yaml
-          # sqflite 2.4.x requires Dart 3.5+, while bridge Flutter 3.22 has Dart 3.4.
-          sed -i -e 's/sqflite: \^2.4.3/sqflite: ^2.3.3+1/g' flutter/pubspec.yaml
+
+      - name: Save bridge generator binaries
+        if: steps.bridge-output-cache.outputs.cache-hit != 'true' && steps.bridge-tools-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@caa296126883cff596d87d8935842f9db880ef25 # v5
+        with:
+          path: |
+            ~/.cargo/bin/cargo-expand
+            ~/.cargo/bin/flutter_rust_bridge_codegen
+          key: bridge-tools-v1-${{ env.RUST_VERSION }}-${{ env.CARGO_EXPAND_VERSION }}-${{ env.FLUTTER_RUST_BRIDGE_VERSION }}
+
+      - name: Prepare bridge Flutter dependencies
+        if: steps.bridge-output-cache.outputs.cache-hit != 'true'
+        shell: bash
+        run: |
           pushd flutter && flutter pub get && popd
 
       - name: Run flutter rust bridge
