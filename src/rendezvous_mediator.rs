@@ -877,12 +877,20 @@ impl RendezvousMediator {
         // under this timeout tears down every healthy LAN P2P connection after four seconds.
         // Once KCP is established, let the session live normally. A real establishment
         // failure still returns here promptly so `handle_punch_hole` can request relay.
-        run_ice_session_after_establish(
+        let result = run_ice_session_after_establish(
             punch_timeout_ms,
             establish_udp_nat(socket, target),
             move |stream| crate::server::create_tcp_connection(server, stream, target, true, meta),
         )
-        .await
+        .await;
+
+        // We already sent PunchHoleSent to the initiator. If this side now starts its
+        // own relay with a fresh UUID, it races the initiator's RequestRelay and the
+        // two half-sessions can never pair (the Android UI eventually reports
+        // "deadline has elapsed"). Return to the rendezvous read loop instead so it
+        // can consume the initiator's one authoritative relay request. Pre-signaling
+        // failures still propagate above and use the legacy controlled-side fallback.
+        finish_signaled_ice_attempt(result)
     }
 
     async fn register_pk(&mut self, socket: Sink<'_>) -> ResultType<()> {
@@ -1145,6 +1153,19 @@ where
     run_session(established).await
 }
 
+/// Once our candidate has been signaled, the initiator owns relay fallback and its UUID.
+/// A local direct-path failure is therefore handled by returning to the rendezvous loop,
+/// not by creating a competing relay session here.
+fn finish_signaled_ice_attempt(result: ResultType<()>) -> ResultType<()> {
+    if let Err(err) = result {
+        log::info!(
+            "ICE direct path ended after candidate signaling; waiting for initiator relay: {}",
+            err
+        );
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod ice_timeout_tests {
     use super::*;
@@ -1179,6 +1200,12 @@ mod ice_timeout_tests {
             .unwrap_err()
             .to_string()
             .contains("ICE udp punch timed out"));
+    }
+
+    #[test]
+    fn signaled_failure_yields_to_initiator_relay() {
+        let result = finish_signaled_ice_attempt(Err(anyhow::anyhow!("direct path failed")));
+        assert!(result.is_ok());
     }
 }
 
