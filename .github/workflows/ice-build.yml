@@ -23,7 +23,7 @@ env:
   CARGO_NDK_VERSION: "3.1.2"
   VCPKG_COMMIT_ID: "120deac3062162151622ca4860575a33844ba10b"
   VCPKG_BINARY_SOURCES: "clear;x-gha,readwrite"
-  VERSION: "1.4.8-ice"
+  VERSION: "1.4.9-ice"
   RUSTDESK_BUILD_FORK: "crashbandicode/rustdesk ICE fork (UNOFFICIAL)"
   RUSTDESK_BUILD_COMMIT: ${{ github.sha }}
 
@@ -84,7 +84,7 @@ jobs:
 
       - name: Cache Bridge
         if: steps.bridge-output-cache.outputs.cache-hit != 'true'
-        uses: actions/cache@6f8efc29b200d32929f49075959781ed54ec270c # v3
+        uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5
         with:
           path: /tmp/flutter_rust_bridge
           key: bridge-${{ env.BRIDGE_FLUTTER_VERSION }}
