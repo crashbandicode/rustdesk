@@ -1122,6 +1122,17 @@ pub fn main_get_version() -> String {
     get_version()
 }
 
+/// Identify custom artifacts without changing the protocol-facing app version.
+pub fn main_get_build_identity_sync() -> SyncReturn<String> {
+    let fork = option_env!("RUSTDESK_BUILD_FORK")
+        .unwrap_or("crashbandicode/rustdesk ICE fork (UNOFFICIAL)");
+    let commit = option_env!("RUSTDESK_BUILD_COMMIT")
+        .or(option_env!("GITHUB_SHA"))
+        .unwrap_or("local");
+    let short_commit = commit.get(..commit.len().min(7)).unwrap_or(commit);
+    SyncReturn(format!("{fork} · commit {short_commit}"))
+}
+
 pub fn main_get_fav() -> Vec<String> {
     get_fav()
 }

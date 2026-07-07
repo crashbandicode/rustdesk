@@ -957,7 +957,8 @@ class _SettingsState extends State<SettingsPage> with WidgetsBindingObserver {
                 onPressed: (context) async {
                   await launchUrl(Uri.parse(url));
                 },
-                title: Text(translate("Version: ") + version),
+                title: Text('${translate("Version: ")}$version\n'
+                    '${bind.mainGetBuildIdentitySync()}'),
                 value: Padding(
                   padding: EdgeInsets.symmetric(vertical: 8),
                   child: Text('rustdesk.com',
@@ -1095,7 +1096,7 @@ void showAbout(OverlayDialogManager dialogManager) {
     return CustomAlertDialog(
       title: Text(translate('About RustDesk')),
       content: Wrap(direction: Axis.vertical, spacing: 12, children: [
-        Text('Version: $version'),
+        Text('Version: $version\n${bind.mainGetBuildIdentitySync()}'),
         InkWell(
             onTap: () async {
               const url = 'https://rustdesk.com/';

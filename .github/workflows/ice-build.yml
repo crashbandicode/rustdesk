@@ -24,6 +24,8 @@ env:
   VCPKG_COMMIT_ID: "120deac3062162151622ca4860575a33844ba10b"
   VCPKG_BINARY_SOURCES: "clear;x-gha,readwrite"
   VERSION: "1.4.8-ice"
+  RUSTDESK_BUILD_FORK: "crashbandicode/rustdesk ICE fork (UNOFFICIAL)"
+  RUSTDESK_BUILD_COMMIT: ${{ github.sha }}
 
 jobs:
   generate-bridge:
