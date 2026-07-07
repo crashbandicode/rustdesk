@@ -627,6 +627,8 @@ mod proto {
     const MAX_KEYBOARD_IMAGE_DIMENSION: u32 = 8_192;
     #[cfg(any(target_os = "windows", test))]
     const MAX_KEYBOARD_IMAGE_PIXELS: u64 = 40_000_000;
+    #[cfg(any(target_os = "windows", test))]
+    const WINDOWS_PNG_CLIPBOARD_FORMAT: &str = "PNG";
 
     /// Decode a keyboard-provided PNG under explicit allocation and dimension limits.
     /// Windows needs RGBA here because arboard publishes both PNG and CF_DIBV5 for
@@ -661,6 +663,19 @@ mod proto {
         reader.limits(limits);
         let rgba = reader.decode().ok()?.into_rgba8();
         Some((width as usize, height as usize, rgba.into_raw()))
+    }
+
+    /// Publish both Chromium's registered `PNG` format and arboard's RGBA image
+    /// formats (`image/png` plus CF_DIBV5). Different Electron applications choose
+    /// different Windows clipboard formats; offering all three avoids empty
+    /// attachments without changing normal clipboard-image synchronization.
+    #[cfg(any(target_os = "windows", test))]
+    fn keyboard_png_clipboard_data(data: Vec<u8>) -> Option<Vec<ClipboardData>> {
+        let (width, height, rgba) = keyboard_png_to_rgba(&data)?;
+        Some(vec![
+            ClipboardData::Special((WINDOWS_PNG_CLIPBOARD_FORMAT.to_owned(), data)),
+            ClipboardData::Image(arboard::ImageData::rgba(width, height, rgba.into())),
+        ])
     }
 
     fn plain_to_proto(s: String, format: ClipboardFormat) -> Clipboard {
@@ -810,7 +825,22 @@ mod proto {
     pub fn from_multi_clipboards(multi_clipboards: Vec<Clipboard>) -> Vec<ClipboardData> {
         multi_clipboards
             .into_iter()
-            .filter_map(from_clipboard)
+            .flat_map(|clipboard| {
+                #[cfg(target_os = "windows")]
+                if clipboard.format.enum_value() == Ok(ClipboardFormat::ImagePng)
+                    && clipboard.special_name == super::KEYBOARD_IMAGE_PASTE_MARKER
+                {
+                    let data = if clipboard.compress {
+                        decompress(&clipboard.content)
+                    } else {
+                        clipboard.content.into()
+                    };
+                    return keyboard_png_clipboard_data(data).unwrap_or_default();
+                }
+                from_clipboard(clipboard)
+                    .into_iter()
+                    .collect::<Vec<ClipboardData>>()
+            })
             .collect()
     }
 
@@ -835,6 +865,18 @@ mod proto {
             assert_eq!((width, height), (2, 3));
             assert_eq!(rgba.len(), 2 * 3 * 4);
             assert_eq!(&rgba[..4], &[12, 34, 56, 255]);
+        }
+
+        #[test]
+        fn keyboard_png_offers_registered_png_before_native_bitmap() {
+            let formats = keyboard_png_clipboard_data(encode_png(2, 3)).unwrap();
+            assert_eq!(formats.len(), 2);
+            assert!(matches!(
+                &formats[0],
+                ClipboardData::Special((name, data))
+                    if name == WINDOWS_PNG_CLIPBOARD_FORMAT && !data.is_empty()
+            ));
+            assert!(matches!(&formats[1], ClipboardData::Image(_)));
         }
 
         #[test]

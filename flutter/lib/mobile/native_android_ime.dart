@@ -71,6 +71,8 @@ class NativeAndroidIme extends StatefulWidget {
 
 class _NativeAndroidImeState extends State<NativeAndroidIme> {
   MethodChannel? _channel;
+  final RecentKeyboardImageDeduplicator _imageDeduplicator =
+      RecentKeyboardImageDeduplicator();
 
   @override
   void dispose() {
@@ -100,7 +102,9 @@ class _NativeAndroidImeState extends State<NativeAndroidIme> {
       case 'image_content':
         final payload = parseAndroidImagePayload(call.arguments);
         if (payload != null) {
-          widget.onImageContent(payload);
+          if (_imageDeduplicator.shouldAccept(payload)) {
+            widget.onImageContent(payload);
+          }
         } else {
           widget.onImageError('The keyboard provided invalid image data');
         }
@@ -129,6 +133,50 @@ class _NativeAndroidImeState extends State<NativeAndroidIme> {
       ),
     );
   }
+}
+
+/// Some Gboard/Android combinations dispatch the same committed content through
+/// both receive-content and InputConnection compatibility paths. Suppress only
+/// byte-identical events inside a short window so one user action causes one
+/// remote paste while a deliberate second paste still works.
+class RecentKeyboardImageDeduplicator {
+  RecentKeyboardImageDeduplicator({
+    this.window = const Duration(milliseconds: 1500),
+  });
+
+  final Duration window;
+  int? _lastFingerprint;
+  DateTime? _lastAcceptedAt;
+
+  bool shouldAccept(KeyboardImagePayload payload, {DateTime? now}) {
+    now ??= DateTime.now();
+    final fingerprint = keyboardImagePayloadFingerprint(payload);
+    final duplicate = _lastFingerprint == fingerprint &&
+        _lastAcceptedAt != null &&
+        now.difference(_lastAcceptedAt!) < window;
+    if (duplicate) {
+      return false;
+    }
+    _lastFingerprint = fingerprint;
+    _lastAcceptedAt = now;
+    return true;
+  }
+}
+
+/// A bounded-cost content fingerprint. At most ~4K bytes are sampled so a large
+/// screenshot cannot stall the UI thread while duplicate rich-content callbacks
+/// remain extremely unlikely to collide inside the 1.5-second guard window.
+int keyboardImagePayloadFingerprint(KeyboardImagePayload payload) {
+  final bytes = payload.bytes;
+  final stride = bytes.length <= 4096 ? 1 : (bytes.length ~/ 4096);
+  var hash = 0x811c9dc5;
+  for (var i = 0; i < bytes.length; i += stride) {
+    hash = ((hash ^ bytes[i]) * 16777619) & 0x3fffffff;
+  }
+  if (bytes.isNotEmpty) {
+    hash = ((hash ^ bytes.last) * 16777619) & 0x3fffffff;
+  }
+  return Object.hash(payload.mimeType.toLowerCase(), bytes.length, hash);
 }
 
 TextEditingValue? parseNativeAndroidEditingValue(dynamic payload) {
