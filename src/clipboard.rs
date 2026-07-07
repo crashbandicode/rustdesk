@@ -9,6 +9,9 @@ use std::{
 };
 
 pub const CLIPBOARD_NAME: &'static str = "clipboard";
+/// Marks an image clipboard update that must finish before a following paste
+/// key event is handled. The field is ignored by older peers for image data.
+pub const KEYBOARD_IMAGE_PASTE_MARKER: &'static str = "dyn.com.rustdesk.keyboard-image-paste";
 #[cfg(feature = "unix-file-copy-paste")]
 pub const FILE_CLIPBOARD_NAME: &'static str = "file-clipboard";
 pub const CLIPBOARD_INTERVAL: u64 = 333;
@@ -287,6 +290,14 @@ pub fn update_clipboard(multi_clipboards: Vec<Clipboard>, side: ClipboardSide) {
     std::thread::spawn(move || {
         update_clipboard_(multi_clipboards, side);
     });
+}
+
+/// Apply a clipboard update before returning. Rich content committed by an
+/// IME uses this so the next ordered key event cannot race the clipboard
+/// worker thread.
+#[cfg(not(target_os = "android"))]
+pub fn update_clipboard_sync(multi_clipboards: Vec<Clipboard>, side: ClipboardSide) {
+    update_clipboard_(multi_clipboards, side);
 }
 
 #[cfg(not(target_os = "android"))]
