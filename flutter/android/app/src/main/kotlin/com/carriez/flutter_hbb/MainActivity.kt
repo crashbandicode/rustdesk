@@ -62,6 +62,10 @@ class MainActivity : FlutterActivity() {
             flutterEngine.dartExecutor.binaryMessenger,
             channelTag
         )
+        flutterEngine.platformViewsController.registry.registerViewFactory(
+            RemoteImeViewFactory.VIEW_TYPE,
+            RemoteImeViewFactory(flutterEngine.dartExecutor.binaryMessenger)
+        )
         initFlutterChannel(flutterMethodChannel!!)
         thread {
             try {
