@@ -25,6 +25,7 @@ import '../../models/platform_model.dart';
 import '../../utils/image.dart';
 import '../ime_input_diff.dart';
 import '../keyboard_image_paste.dart';
+import '../native_android_ime.dart';
 import '../widgets/dialog.dart';
 import '../widgets/custom_scale_widget.dart';
 
@@ -76,6 +77,8 @@ class _RemotePageState extends State<RemotePage> with WidgetsBindingObserver {
   late final StreamSubscription<bool> keyboardSubscription;
   final FocusNode _mobileFocusNode = FocusNode();
   final FocusNode _physicalFocusNode = FocusNode();
+  final NativeAndroidImeController _nativeAndroidImeController =
+      NativeAndroidImeController();
   var _showEdit = false; // use soft keyboard
 
   Worker? _waylandKeyboardGateWorker;
@@ -161,6 +164,8 @@ class _RemotePageState extends State<RemotePage> with WidgetsBindingObserver {
     gFFI.imageModel.disposeImage();
     gFFI.cursorModel.disposeImages();
     await gFFI.invokeMethod("enable_soft_keyboard", true);
+    _nativeAndroidImeController.hide();
+    _nativeAndroidImeController.reset();
     _mobileFocusNode.dispose();
     _physicalFocusNode.dispose();
     clearWaylandKeyboardPromptSuppressedForConnection(sessionId.toString());
@@ -228,7 +233,7 @@ class _RemotePageState extends State<RemotePage> with WidgetsBindingObserver {
     // Ensure soft keyboard is not active before user confirms.
     _showEdit = false;
     gFFI.invokeMethod("enable_soft_keyboard", false);
-    _mobileFocusNode.unfocus();
+    _unfocusSoftKeyboardEditor();
     _physicalFocusNode.requestFocus();
     setState(() {});
   }
@@ -276,7 +281,7 @@ class _RemotePageState extends State<RemotePage> with WidgetsBindingObserver {
       _timer = Timer(kMobileDelaySoftKeyboardFocus, () {
         SystemChrome.setEnabledSystemUIMode(SystemUiMode.manual,
             overlays: SystemUiOverlay.values);
-        _mobileFocusNode.requestFocus();
+        _focusSoftKeyboardEditor();
       });
     }
     // update for Scaffold
@@ -334,9 +339,13 @@ class _RemotePageState extends State<RemotePage> with WidgetsBindingObserver {
   }
 
   void _handleNonIOSSoftKeyboardInput(String _) {
+    _applyAndroidImeEditingValue(_textController.value);
+  }
+
+  void _applyAndroidImeEditingValue(TextEditingValue editingValue) {
     final plan = planAndroidImeEdit(
       sentValue: _value,
-      editingValue: _textController.value,
+      editingValue: editingValue,
     );
     if (plan.deferred) {
       return;
@@ -373,33 +382,6 @@ class _RemotePageState extends State<RemotePage> with WidgetsBindingObserver {
       // character is not consumed by the local editor on the next keystroke.
       _openKeyboardUnlocked();
     }
-  }
-
-  void _handleKeyboardInsertedContent(KeyboardInsertedContent content) {
-    unawaited(_pasteKeyboardImage(content));
-  }
-
-  Future<void> _pasteKeyboardImage(KeyboardInsertedContent content) async {
-    Uint8List? bytes = content.data;
-    var mimeType = content.mimeType;
-    if (bytes == null || bytes.isEmpty) {
-      try {
-        final payload = await platformFFI.invokeMethod('read_content_uri', {
-          'uri': content.uri,
-          'mimeType': content.mimeType,
-        });
-        final parsed = parseAndroidImagePayload(payload);
-        bytes = parsed?.bytes;
-        mimeType = parsed?.mimeType ?? mimeType;
-      } catch (e) {
-        debugPrint('Failed to resolve keyboard content URI: $e');
-      }
-    }
-    if (bytes == null || bytes.isEmpty) {
-      showToast(translate('The keyboard did not provide image data'));
-      return;
-    }
-    await _pasteImageBytes(bytes, mimeType);
   }
 
   Future<void> _pasteAndroidClipboardImage() async {
@@ -452,7 +434,7 @@ class _RemotePageState extends State<RemotePage> with WidgetsBindingObserver {
         useCommand: gFFI.ffiModel.pi.platform == kPeerPlatformMacOS,
       );
       showToast(translate(
-          pasted ? 'Image pasted on remote device' : 'Unable to paste image'));
+          pasted ? 'Image sent to remote clipboard' : 'Unable to paste image'));
     } catch (e) {
       debugPrint('Failed to paste keyboard image: $e');
       if (mounted) {
@@ -523,9 +505,24 @@ class _RemotePageState extends State<RemotePage> with WidgetsBindingObserver {
       _timer = Timer(kMobileDelaySoftKeyboardFocus, () {
         SystemChrome.setEnabledSystemUIMode(SystemUiMode.manual,
             overlays: SystemUiOverlay.values);
-        _mobileFocusNode.requestFocus();
+        _focusSoftKeyboardEditor();
       });
     });
+  }
+
+  void _focusSoftKeyboardEditor() {
+    if (isAndroid) {
+      _nativeAndroidImeController.show();
+    } else {
+      _mobileFocusNode.requestFocus();
+    }
+  }
+
+  void _unfocusSoftKeyboardEditor() {
+    if (isAndroid) {
+      _nativeAndroidImeController.hide();
+    }
+    _mobileFocusNode.unfocus();
   }
 
   Widget _bottomWidget() => _showGestureHelp
@@ -566,7 +563,7 @@ class _RemotePageState extends State<RemotePage> with WidgetsBindingObserver {
                       if (keyboardIsVisible) {
                         _showEdit = false;
                         gFFI.invokeMethod("enable_soft_keyboard", false);
-                        _mobileFocusNode.unfocus();
+                        _unfocusSoftKeyboardEditor();
                         _physicalFocusNode.requestFocus();
                       } else if (_showGestureHelp) {
                         _showGestureHelp = false;
@@ -773,53 +770,40 @@ class _RemotePageState extends State<RemotePage> with WidgetsBindingObserver {
                 keyboardIsVisible: keyboardIsVisible,
                 showGestureHelp: _showGestureHelp),
             SizedBox(
-              width: 0,
-              height: 0,
+              width: isAndroid ? 1 : 0,
+              height: isAndroid ? 1 : 0,
               child: !_showEdit
                   ? Container()
-                  : TextFormField(
-                      textInputAction: TextInputAction.newline,
-                      // Android exposes autocorrect and suggestions separately.
-                      // Keep both enabled so prediction and voice composition stay
-                      // active while the hidden input field forwards remote text.
-                      autocorrect: true,
-                      enableSuggestions: true,
-                      contentInsertionConfiguration: isAndroid
-                          ? ContentInsertionConfiguration(
-                              // The wildcard lets Gboard advertise vendor/newer
-                              // image formats; explicit common types also satisfy
-                              // Flutter's debug-time exact MIME assertion.
-                              allowedMimeTypes: const [
-                                'image/*',
-                                'image/png',
-                                'image/jpeg',
-                                'image/jpg',
-                                'image/webp',
-                                'image/gif',
-                                'image/bmp',
-                                'image/heic',
-                                'image/heif',
-                                'image/avif',
-                              ],
-                              onContentInserted: _handleKeyboardInsertedContent,
-                            )
-                          : null,
-                      autofocus: true,
-                      focusNode: _mobileFocusNode,
-                      maxLines: null,
-                      controller: _textController,
-                      // trick way to make backspace work always
-                      keyboardType: TextInputType.multiline,
-                      // `onChanged` may be called depending on the input method if this widget is wrapped in
-                      // `Focus(onKeyEvent: ..., child: ...)`
-                      // For `Backspace` button in the soft keyboard:
-                      // en/fr input method:
-                      //      1. The button will not trigger `onKeyEvent` if the text field is not empty.
-                      //      2. The button will trigger `onKeyEvent` if the text field is empty.
-                      // ko/zh/ja input method: the button will trigger `onKeyEvent`
-                      //                     and the event will not popup if `KeyEventResult.handled` is returned.
-                      onChanged: handleSoftKeyboardInput,
-                    ).workaroundFreezeLinuxMint(),
+                  : isAndroid
+                      ? NativeAndroidIme(
+                          controller: _nativeAndroidImeController,
+                          initialText: initText,
+                          onEditingValueChanged: _applyAndroidImeEditingValue,
+                          onImageContent: (payload) => unawaited(
+                            _pasteImageBytes(payload.bytes, payload.mimeType),
+                          ),
+                          onImageError: (message) => showToast(message),
+                        )
+                      : TextFormField(
+                          textInputAction: TextInputAction.newline,
+                          autocorrect: true,
+                          enableSuggestions: true,
+                          autofocus: true,
+                          focusNode: _mobileFocusNode,
+                          maxLines: null,
+                          controller: _textController,
+                          // trick way to make backspace work always
+                          keyboardType: TextInputType.multiline,
+                          // `onChanged` may be called depending on the input method if this widget is wrapped in
+                          // `Focus(onKeyEvent: ..., child: ...)`
+                          // For `Backspace` button in the soft keyboard:
+                          // en/fr input method:
+                          //      1. The button will not trigger `onKeyEvent` if the text field is not empty.
+                          //      2. The button will trigger `onKeyEvent` if the text field is empty.
+                          // ko/zh/ja input method: the button will trigger `onKeyEvent`
+                          //                     and the event will not popup if `KeyEventResult.handled` is returned.
+                          onChanged: handleSoftKeyboardInput,
+                        ).workaroundFreezeLinuxMint(),
             ),
           ];
           if (showCursorPaint) {
