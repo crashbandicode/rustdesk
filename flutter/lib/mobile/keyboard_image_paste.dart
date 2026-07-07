@@ -6,6 +6,24 @@ const int kMaxKeyboardImageBytes = 16 * 1024 * 1024;
 
 typedef KeyboardImagePayload = ({Uint8List bytes, String mimeType});
 
+/// Decode the standard-codec map returned by the Android platform channel.
+KeyboardImagePayload? parseAndroidImagePayload(dynamic payload) {
+  if (payload is! Map) {
+    return null;
+  }
+  final data = payload['data'];
+  final bytes = data is Uint8List
+      ? data
+      : data is List<int>
+          ? Uint8List.fromList(data)
+          : null;
+  final mimeType = payload['mimeType'];
+  if (bytes == null || bytes.isEmpty || mimeType is! String) {
+    return null;
+  }
+  return (bytes: bytes, mimeType: mimeType);
+}
+
 /// Converts rich content committed by an Android IME to the PNG clipboard
 /// format understood by RustDesk peers. Animated formats intentionally use the
 /// first decoded frame because desktop image clipboards are static.

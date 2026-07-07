@@ -24,6 +24,7 @@ import android.media.MediaCodecInfo.CodecCapabilities.COLOR_FormatSurface
 import android.media.MediaCodecInfo.CodecCapabilities.COLOR_FormatYUV420SemiPlanar
 import android.media.MediaCodecList
 import android.media.MediaFormat
+import android.net.Uri
 import android.util.DisplayMetrics
 import androidx.annotation.RequiresApi
 import org.json.JSONArray
@@ -99,7 +100,10 @@ class MainActivity : FlutterActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         if (_rdClipboardManager == null) {
-            _rdClipboardManager = RdClipboardManager(getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager)
+            _rdClipboardManager = RdClipboardManager(
+                this,
+                getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+            )
             FFI.setClipboardManager(_rdClipboardManager!!)
         }
     }
@@ -239,6 +243,27 @@ class MainActivity : FlutterActivity() {
                     rdClipboardManager?.syncClipboard(true)
                     result.success(true)
                 }
+                "read_clipboard_image" -> {
+                    readImagePayload(result) {
+                        rdClipboardManager?.readPrimaryImage(16 * 1024 * 1024)
+                    }
+                }
+                "read_content_uri" -> {
+                    val args = call.arguments as? Map<*, *>
+                    val uri = args?.get("uri") as? String
+                    val mimeType = args?.get("mimeType") as? String ?: "image/*"
+                    if (uri == null) {
+                        result.error("invalid-uri", "Missing content URI", null)
+                    } else {
+                        readImagePayload(result) {
+                            rdClipboardManager?.readImageUri(
+                                Uri.parse(uri),
+                                mimeType,
+                                16 * 1024 * 1024
+                            )
+                        }
+                    }
+                }
                 GET_START_ON_BOOT_OPT -> {
                     val prefs = getSharedPreferences(KEY_SHARED_PREFERENCES, MODE_PRIVATE)
                     result.success(prefs.getBoolean(KEY_START_ON_BOOT_OPT, false))
@@ -284,6 +309,23 @@ class MainActivity : FlutterActivity() {
                 }
                 else -> {
                     result.error("-1", "No such method", null)
+                }
+            }
+        }
+    }
+
+    private fun readImagePayload(
+        result: MethodChannel.Result,
+        read: () -> Map<String, Any>?
+    ) {
+        thread {
+            try {
+                val payload = read()
+                runOnUiThread { result.success(payload) }
+            } catch (e: Exception) {
+                Log.e(logTag, "Failed to read image content", e)
+                runOnUiThread {
+                    result.error("image-read-failed", e.message ?: "Unable to read image", null)
                 }
             }
         }
