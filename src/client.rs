@@ -849,9 +849,46 @@ impl Client {
             start.elapsed(),
             punch_type
         );
-        let res = Self::secure_connection(peer_id, signed_id_pk, key, &mut conn).await;
-        let pk: Option<Vec<u8>> = match res {
+        let direct_handshake =
+            Self::secure_connection(peer_id, signed_id_pk.clone(), key, &mut conn).await;
+        let pk: Option<Vec<u8>> = match direct_handshake {
             Ok(pk) => pk,
+            Err(direct_error)
+                if should_retry_direct_handshake_via_relay(direct, relay_server) =>
+            {
+                // A punched UDP/KCP transport can open and then close before the secure
+                // RustDesk handshake reaches the controlled session. Treating transport
+                // establishment as final success made the mobile client restart the whole
+                // rendezvous flow every ~25s without ever requesting relay. Retry the secure
+                // handshake over relay inside this same attempt instead.
+                log::info!(
+                    "direct {typ} secure handshake failed; retrying via relay: {direct_error}"
+                );
+                conn = Self::request_relay(
+                    peer_id,
+                    relay_server.to_owned(),
+                    rendezvous_server,
+                    !signed_id_pk.is_empty(),
+                    key,
+                    token,
+                    conn_type,
+                )
+                .await
+                .with_context(|| {
+                    format!(
+                        "Direct {typ} handshake failed ({direct_error}); relay fallback failed"
+                    )
+                })?;
+                typ = "Relay";
+                direct = false;
+                Self::secure_connection(peer_id, signed_id_pk, key, &mut conn)
+                    .await
+                    .with_context(|| {
+                        format!(
+                            "Direct handshake failed ({direct_error}); relay secure handshake failed"
+                        )
+                    })?
+            }
             Err(e) => {
                 // this direct is mainly used by on_establish_connection_error, so we update it here before bail
                 interface.update_direct(Some(direct));
@@ -4429,6 +4466,11 @@ async fn test_udp_uat(
 }
 
 #[inline]
+fn should_retry_direct_handshake_via_relay(direct: bool, relay_server: &str) -> bool {
+    direct && !relay_server.is_empty()
+}
+
+#[inline]
 async fn udp_nat_connect(
     socket: Arc<UdpSocket>,
     typ: &'static str,
@@ -4459,4 +4501,26 @@ async fn udp_nat_connect(
             anyhow!(err)
         })?;
     Ok((res.1, Some(res.0), typ))
+}
+
+#[cfg(test)]
+mod direct_handshake_fallback_tests {
+    use super::should_retry_direct_handshake_via_relay;
+
+    #[test]
+    fn retries_failed_direct_handshake_when_relay_is_available() {
+        assert!(should_retry_direct_handshake_via_relay(
+            true,
+            "relay.example.test:21117"
+        ));
+    }
+
+    #[test]
+    fn does_not_retry_an_existing_relay_or_without_a_relay_server() {
+        assert!(!should_retry_direct_handshake_via_relay(
+            false,
+            "relay.example.test:21117"
+        ));
+        assert!(!should_retry_direct_handshake_via_relay(true, ""));
+    }
 }
