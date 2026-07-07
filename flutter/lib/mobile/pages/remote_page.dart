@@ -380,6 +380,46 @@ class _RemotePageState extends State<RemotePage> with WidgetsBindingObserver {
   }
 
   Future<void> _pasteKeyboardImage(KeyboardInsertedContent content) async {
+    Uint8List? bytes = content.data;
+    var mimeType = content.mimeType;
+    if (bytes == null || bytes.isEmpty) {
+      try {
+        final payload = await platformFFI.invokeMethod('read_content_uri', {
+          'uri': content.uri,
+          'mimeType': content.mimeType,
+        });
+        final parsed = parseAndroidImagePayload(payload);
+        bytes = parsed?.bytes;
+        mimeType = parsed?.mimeType ?? mimeType;
+      } catch (e) {
+        debugPrint('Failed to resolve keyboard content URI: $e');
+      }
+    }
+    if (bytes == null || bytes.isEmpty) {
+      showToast(translate('The keyboard did not provide image data'));
+      return;
+    }
+    await _pasteImageBytes(bytes, mimeType);
+  }
+
+  Future<void> _pasteAndroidClipboardImage() async {
+    try {
+      final payload = await platformFFI.invokeMethod('read_clipboard_image');
+      final parsed = parseAndroidImagePayload(payload);
+      if (parsed == null) {
+        showToast(translate('No image found in the Android clipboard'));
+        return;
+      }
+      await _pasteImageBytes(parsed.bytes, parsed.mimeType);
+    } catch (e) {
+      debugPrint('Failed to read Android clipboard image: $e');
+      if (mounted) {
+        showToast(translate('Unable to read the Android clipboard image'));
+      }
+    }
+  }
+
+  Future<void> _pasteImageBytes(Uint8List bytes, String mimeType) async {
     if (!inputModel.keyboardInputAllowed || !inputModel.keyboardPerm) {
       showToast(translate('Keyboard input is not permitted'));
       return;
@@ -389,11 +429,6 @@ class _RemotePageState extends State<RemotePage> with WidgetsBindingObserver {
       return;
     }
 
-    final bytes = content.data;
-    if (bytes == null || bytes.isEmpty) {
-      showToast(translate('The keyboard did not provide image data'));
-      return;
-    }
     if (bytes.length > kMaxKeyboardImageBytes) {
       showToast(translate('The image is too large to paste'));
       return;
@@ -402,7 +437,7 @@ class _RemotePageState extends State<RemotePage> with WidgetsBindingObserver {
     try {
       final png = await compute(
         normalizeKeyboardImageToPng,
-        (bytes: bytes, mimeType: content.mimeType),
+        (bytes: bytes, mimeType: mimeType),
       );
       if (!mounted || png == null) {
         if (mounted) {
@@ -657,6 +692,14 @@ class _RemotePageState extends State<RemotePage> with WidgetsBindingObserver {
                                   color: Colors.white,
                                   icon: Icon(Icons.keyboard),
                                   onPressed: openKeyboard),
+                              if (isAndroid)
+                                IconButton(
+                                  color: Colors.white,
+                                  tooltip: translate(
+                                      'Paste image from Android clipboard'),
+                                  icon: const Icon(Icons.add_photo_alternate),
+                                  onPressed: _pasteAndroidClipboardImage,
+                                ),
                               IconButton(
                                 color: Colors.white,
                                 icon: Icon(gFFI.ffiModel.touchMode
@@ -743,6 +786,21 @@ class _RemotePageState extends State<RemotePage> with WidgetsBindingObserver {
                       enableSuggestions: true,
                       contentInsertionConfiguration: isAndroid
                           ? ContentInsertionConfiguration(
+                              // The wildcard lets Gboard advertise vendor/newer
+                              // image formats; explicit common types also satisfy
+                              // Flutter's debug-time exact MIME assertion.
+                              allowedMimeTypes: const [
+                                'image/*',
+                                'image/png',
+                                'image/jpeg',
+                                'image/jpg',
+                                'image/webp',
+                                'image/gif',
+                                'image/bmp',
+                                'image/heic',
+                                'image/heif',
+                                'image/avif',
+                              ],
                               onContentInserted: _handleKeyboardInsertedContent,
                             )
                           : null,

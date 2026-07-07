@@ -1,5 +1,6 @@
 package com.carriez.flutter_hbb
 
+import java.io.ByteArrayOutputStream
 import java.nio.ByteBuffer
 import java.util.Timer
 import java.util.TimerTask
@@ -7,6 +8,8 @@ import java.util.TimerTask
 import android.content.ClipData
 import android.content.ClipDescription
 import android.content.ClipboardManager
+import android.content.Context
+import android.net.Uri
 import android.util.Log
 import androidx.annotation.Keep
 
@@ -16,7 +19,10 @@ import hbb.MessageOuterClass.MultiClipboards
 
 import ffi.FFI
 
-class RdClipboardManager(private val clipboardManager: ClipboardManager) {
+class RdClipboardManager(
+    private val context: Context,
+    private val clipboardManager: ClipboardManager
+) {
     private val logTag = "RdClipboardManager"
     private val supportedMimeTypes = arrayOf(
         ClipDescription.MIMETYPE_TEXT_PLAIN,
@@ -40,6 +46,56 @@ class RdClipboardManager(private val clipboardManager: ClipboardManager) {
 
     val isCaptureStarted: Boolean
         get() = _isCaptureStarted
+
+    /** Read the first image from Android's clipboard for an explicit user paste. */
+    fun readPrimaryImage(maxBytes: Int): Map<String, Any>? {
+        val clipData = clipboardManager.primaryClip ?: return null
+        if (clipData.itemCount == 0) {
+            return null
+        }
+        val description = clipData.description
+        var mimeType: String? = null
+        for (i in 0 until description.mimeTypeCount) {
+            val candidate = description.getMimeType(i)
+            if (ClipDescription.compareMimeTypes(candidate, "image/*")) {
+                mimeType = candidate
+                break
+            }
+        }
+        val item = clipData.getItemAt(0)
+        val uri = item.uri ?: item.intent?.data ?: return null
+        val resolvedMimeType = context.contentResolver.getType(uri) ?: mimeType ?: return null
+        if (!ClipDescription.compareMimeTypes(resolvedMimeType, "image/*")) {
+            return null
+        }
+        return readImageUri(uri, resolvedMimeType, maxBytes)
+    }
+
+    /** Resolve a keyboard-provided content URI when Flutter did not include bytes. */
+    fun readImageUri(uri: Uri, mimeType: String, maxBytes: Int): Map<String, Any>? {
+        val actualMimeType = context.contentResolver.getType(uri) ?: mimeType
+        if (!ClipDescription.compareMimeTypes(actualMimeType, "image/*")) {
+            return null
+        }
+        val bytes = context.contentResolver.openInputStream(uri)?.use { input ->
+            val output = ByteArrayOutputStream()
+            val buffer = ByteArray(64 * 1024)
+            var total = 0
+            while (true) {
+                val count = input.read(buffer)
+                if (count < 0) {
+                    break
+                }
+                total += count
+                if (total > maxBytes) {
+                    throw IllegalArgumentException("Image exceeds $maxBytes bytes")
+                }
+                output.write(buffer, 0, count)
+            }
+            output.toByteArray()
+        } ?: return null
+        return mapOf("mimeType" to actualMimeType, "data" to bytes)
+    }
 
     fun checkPrimaryClip(isClient: Boolean) {
         val clipData = clipboardManager.primaryClip

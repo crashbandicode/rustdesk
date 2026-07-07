@@ -5,6 +5,26 @@ import 'package:flutter_hbb/mobile/keyboard_image_paste.dart';
 import 'package:image/image.dart' as image_codec;
 
 void main() {
+  test('parses Android platform image payloads', () {
+    final bytes = Uint8List.fromList(<int>[1, 2, 3]);
+    final typed = parseAndroidImagePayload(
+      <String, dynamic>{'mimeType': 'image/png', 'data': bytes},
+    );
+    final listed = parseAndroidImagePayload(
+      <String, dynamic>{
+        'mimeType': 'image/jpeg',
+        'data': <int>[4, 5]
+      },
+    );
+
+    expect(typed?.mimeType, 'image/png');
+    expect(typed?.bytes, bytes);
+    expect(listed?.mimeType, 'image/jpeg');
+    expect(listed?.bytes, <int>[4, 5]);
+    expect(parseAndroidImagePayload(null), isNull);
+    expect(parseAndroidImagePayload(<String, dynamic>{'data': bytes}), isNull);
+  });
+
   test('keeps PNG keyboard content as PNG', () {
     final source = Uint8List.fromList(<int>[137, 80, 78, 71, 1, 2, 3]);
     final result = normalizeKeyboardImageToPng(

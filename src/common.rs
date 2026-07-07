@@ -939,7 +939,10 @@ pub fn is_modifier(evt: &KeyEvent) -> bool {
 }
 
 pub fn check_software_update() {
-    if is_custom_client() {
+    // This fork has its own signed CI artifacts. Comparing its protocol-facing
+    // version with the official release channel produces a misleading banner
+    // and sends users to an incompatible download.
+    if is_custom_client() || option_env!("RUSTDESK_BUILD_FORK").is_some() {
         return;
     }
     let opt = LocalConfig::get_option(keys::OPTION_ENABLE_CHECK_UPDATE);
