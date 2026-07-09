@@ -485,19 +485,33 @@ impl Client {
         // losing the punch/relay race that caused the relay-off reconnect loop.
         if crate::ice::enabled() && use_ws() && !interface.is_force_relay() {
             if let Some(s) = udp.0.as_ref() {
-                match crate::ice::gather_srflx_on(s, &crate::ice::configured_stun(), 3000).await {
+                // Host candidates do not depend on public STUN. In particular, an
+                // Android STUN/DNS failure must not erase the same-Wi-Fi path to a
+                // laptop whose full-tunnel VPN makes its public NAT symmetric.
+                let local_port = s.local_addr().map(|a| a.port()).unwrap_or(0);
+                let hosts = crate::ice::host_candidates(local_port).await;
+                let srflx = match crate::ice::gather_srflx_on(
+                    s,
+                    &crate::ice::configured_stun(),
+                    3000,
+                )
+                .await
+                {
                     Ok(srflx) => {
                         udp_nat_port = srflx.port();
-                        // Advertise a host candidate for every local network (LAN, VPN
-                        // overlay, ...) on the port we punch from, so a peer that shares
-                        // any of them can reach us directly instead of relaying.
-                        let local_port = s.local_addr().map(|a| a.port()).unwrap_or(0);
-                        let hosts = crate::ice::host_candidates(local_port).await;
-                        ice_srflx =
-                            crate::ice::encode_candidates(&hosts, Some(&srflx.to_string()));
-                        log::info!("ICE: advertising candidates {}", ice_srflx);
+                        Some(srflx.to_string())
                     }
-                    Err(e) => log::info!("ICE: srflx discovery failed: {}", e),
+                    Err(e) => {
+                        log::info!(
+                            "ICE: srflx discovery failed; keeping host candidates: {}",
+                            e
+                        );
+                        None
+                    }
+                };
+                ice_srflx = crate::ice::encode_candidates(&hosts, srflx.as_deref());
+                if !ice_srflx.is_empty() {
+                    log::info!("ICE: advertising candidates {}", ice_srflx);
                 }
             }
         }

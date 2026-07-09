@@ -789,33 +789,43 @@ impl RendezvousMediator {
     ) -> ResultType<()> {
         let local_addr = Config::get_any_listen_addr(true);
         let socket = Arc::new(tokio::net::UdpSocket::bind(local_addr).await?);
-        let my_srflx =
-            crate::ice::gather_srflx_on(&socket, &crate::ice::configured_stun(), 3000).await?;
         let local_port = socket.local_addr().map(|a| a.port()).unwrap_or(0);
 
         // Prefer a directly-reachable LAN/overlay pair: for each host candidate the peer
-        // advertised, ask the OS which local source IP would reach it. A directly-connected
-        // subnet outranks a VPN default route, so this finds the real LAN even when either
-        // side runs a full-tunnel VPN. If that source shares the peer's private /24 it's a
-        // usable same-network pair, and we advertise that exact source back.
-        let mut chosen: Option<(SocketAddr, String, u64)> = None;
+        // advertised, ask the OS which local source IP would reach it and verify the peer
+        // against that interface's real netmask. Scan all candidates so physical LAN wins
+        // over an overlay regardless of OS enumeration order.
+        let mut chosen_host: Option<(
+            SocketAddr,
+            std::net::IpAddr,
+            crate::ice::DirectCandidateKind,
+        )> = None;
         let mut is_symmetric = false;
         let mut endpoint_independent_mapping = false;
         for ph in &peer.hosts {
-            if let (std::net::IpAddr::V4(pv4), Some(std::net::IpAddr::V4(src))) =
-                (ph.ip(), crate::ice::source_ip_for(ph.ip()))
-            {
-                if crate::ice::same_lan_v4(src, pv4) {
-                    let my_cand = SocketAddr::new(src.into(), local_port).to_string();
-                    log::info!("ICE: LAN punch {} -> {}", my_cand, ph);
-                    chosen = Some((*ph, my_cand, 4_000));
-                    break;
+            if let Some((source, kind)) = crate::ice::direct_candidate_route(ph.ip()) {
+                if crate::ice::should_replace_direct_candidate(
+                    chosen_host.map(|(_, _, current)| current),
+                    kind,
+                ) {
+                    chosen_host = Some((*ph, source, kind));
                 }
             }
         }
+        let mut chosen: Option<(SocketAddr, String, u64)> =
+            chosen_host.map(|(target, source, kind)| {
+                let my_cand = SocketAddr::new(source, local_port).to_string();
+                log::info!("ICE: {} punch {} -> {}", kind.label(), my_cand, target);
+                (target, my_cand, 4_000)
+            });
         // Otherwise fall back to the server-reflexive (STUN) pair across NATs — unless we
         // share the peer's public IP (same NAT, no LAN pair) where hairpin punching fails.
         if chosen.is_none() {
+            // A proven host pair does not depend on public STUN. Gather srflx only for the
+            // cross-network fallback so VPN DNS/UDP policy cannot erase same-Wi-Fi or
+            // NetBird connectivity.
+            let my_srflx =
+                crate::ice::gather_srflx_on(&socket, &crate::ice::configured_stun(), 3000).await?;
             match peer.srflx {
                 Some(ps) if ps.ip() != my_srflx.ip() => {
                     // Probe a second (different-provider) STUN server on the *same* socket.
