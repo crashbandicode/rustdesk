@@ -22,6 +22,13 @@ const RUSTDESK_CLIPBOARD_OWNER_FORMAT: &'static str = "dyn.com.rustdesk.owner";
 // Add special format for Excel XML Spreadsheet
 const CLIPBOARD_FORMAT_EXCEL_XML_SPREADSHEET: &'static str = "XML Spreadsheet";
 
+// Windows applications disagree on the registered PNG clipboard name. Chromium,
+// Snipping Tool, and Electron commonly publish `PNG`, while arboard's ImagePng
+// reader looks for `image/png`. Read both and normalize them to ImagePng on the
+// wire so the receiving desktop can publish every compatible Windows format.
+#[cfg(any(target_os = "windows", test))]
+const WINDOWS_PNG_CLIPBOARD_FORMAT: &str = "PNG";
+
 #[cfg(not(target_os = "android"))]
 lazy_static::lazy_static! {
     static ref ARBOARD_MTX: Arc<Mutex<()>> = Arc::new(Mutex::new(()));
@@ -44,7 +51,12 @@ const SUPPORTED_FORMATS: &[ClipboardFormat] = &[
     ClipboardFormat::Text,
     ClipboardFormat::Html,
     ClipboardFormat::Rtf,
+    #[cfg(target_os = "windows")]
+    ClipboardFormat::Special(WINDOWS_PNG_CLIPBOARD_FORMAT),
+    #[cfg(target_os = "windows")]
+    ClipboardFormat::ImagePng,
     ClipboardFormat::ImageRgba,
+    #[cfg(not(target_os = "windows"))]
     ClipboardFormat::ImagePng,
     ClipboardFormat::ImageSvg,
     #[cfg(feature = "unix-file-copy-paste")]
@@ -628,22 +640,15 @@ mod proto {
     #[cfg(any(target_os = "windows", test))]
     const MAX_KEYBOARD_IMAGE_PIXELS: u64 = 40_000_000;
     #[cfg(any(target_os = "windows", test))]
-    const WINDOWS_PNG_CLIPBOARD_FORMAT: &str = "PNG";
-
-    /// Decode a keyboard-provided PNG under explicit allocation and dimension limits.
-    /// Windows needs RGBA here because arboard publishes both PNG and CF_DIBV5 for
-    /// `ImageData::Rgba`, while `ImageData::Png` only exposes the registered PNG format.
-    #[cfg(any(target_os = "windows", test))]
-    fn keyboard_png_to_rgba(data: &[u8]) -> Option<(usize, usize, Vec<u8>)> {
+    fn bounded_png_dimensions(data: &[u8]) -> Option<(u32, u32)> {
         if data.is_empty() || data.len() > MAX_KEYBOARD_IMAGE_BYTES {
             return None;
         }
 
-        let dimensions =
+        let (width, height) =
             image::io::Reader::with_format(std::io::Cursor::new(data), image::ImageFormat::Png)
                 .into_dimensions()
                 .ok()?;
-        let (width, height) = dimensions;
         let pixels = u64::from(width).checked_mul(u64::from(height))?;
         if width == 0
             || height == 0
@@ -653,6 +658,15 @@ mod proto {
         {
             return None;
         }
+        Some((width, height))
+    }
+
+    /// Decode a synchronized PNG under explicit allocation and dimension limits.
+    /// Windows needs RGBA here because arboard publishes both PNG and CF_DIBV5 for
+    /// `ImageData::Rgba`, while `ImageData::Png` only exposes the registered PNG format.
+    #[cfg(any(target_os = "windows", test))]
+    fn bounded_png_to_rgba(data: &[u8]) -> Option<(usize, usize, Vec<u8>)> {
+        let (width, height) = bounded_png_dimensions(data)?;
 
         let mut limits = image::io::Limits::default();
         limits.max_image_width = Some(MAX_KEYBOARD_IMAGE_DIMENSION);
@@ -670,10 +684,10 @@ mod proto {
     /// different Windows clipboard formats; offering all three avoids empty
     /// attachments without changing normal clipboard-image synchronization.
     #[cfg(any(target_os = "windows", test))]
-    fn keyboard_png_clipboard_data(data: Vec<u8>) -> Option<Vec<ClipboardData>> {
-        let (width, height, rgba) = keyboard_png_to_rgba(&data)?;
+    fn windows_png_clipboard_data(data: Vec<u8>) -> Option<Vec<ClipboardData>> {
+        let (width, height, rgba) = bounded_png_to_rgba(&data)?;
         Some(vec![
-            ClipboardData::Special((WINDOWS_PNG_CLIPBOARD_FORMAT.to_owned(), data)),
+            ClipboardData::Special((super::WINDOWS_PNG_CLIPBOARD_FORMAT.to_owned(), data)),
             ClipboardData::Image(arboard::ImageData::rgba(width, height, rgba.into())),
         ])
     }
@@ -738,21 +752,27 @@ mod proto {
         }
     }
 
-    fn special_to_proto(d: Vec<u8>, s: String) -> Clipboard {
+    fn special_to_proto(d: Vec<u8>, s: String) -> Option<Clipboard> {
+        #[cfg(any(target_os = "windows", test))]
+        if s == super::WINDOWS_PNG_CLIPBOARD_FORMAT {
+            bounded_png_dimensions(&d)?;
+            return Some(Clipboard {
+                content: d.into(),
+                format: ClipboardFormat::ImagePng.into(),
+                ..Default::default()
+            });
+        }
+
         let compressed = compress_func(&d);
         let compress = compressed.len() < d.len();
-        let content = if compress {
-            compressed
-        } else {
-            s.bytes().collect::<Vec<u8>>()
-        };
-        Clipboard {
+        let content = if compress { compressed } else { d };
+        Some(Clipboard {
             compress,
             content: content.into(),
             format: ClipboardFormat::Special.into(),
             special_name: s,
             ..Default::default()
-        }
+        })
     }
 
     #[cfg(not(target_os = "android"))]
@@ -762,7 +782,7 @@ mod proto {
             ClipboardData::Rtf(s) => plain_to_proto(s, ClipboardFormat::Rtf),
             ClipboardData::Html(s) => plain_to_proto(s, ClipboardFormat::Html),
             ClipboardData::Image(a) => image_to_proto(a),
-            ClipboardData::Special((s, d)) => special_to_proto(d, s),
+            ClipboardData::Special((s, d)) => return special_to_proto(d, s),
             _ => return None,
         };
         Some(d)
@@ -770,10 +790,37 @@ mod proto {
 
     #[cfg(not(target_os = "android"))]
     pub fn create_multi_clipboards(vec_data: Vec<ClipboardData>) -> MultiClipboards {
+        // A single Windows image is often exposed simultaneously as PNG, image/png,
+        // and DIBV5. Keep the first representation from SUPPORTED_FORMATS (registered
+        // PNG first on Windows) so it is transferred once and cannot paste twice.
+        #[cfg(any(target_os = "windows", test))]
+        let mut image_seen = false;
         MultiClipboards {
             clipboards: vec_data
                 .into_iter()
                 .filter_map(clipboard_data_to_proto)
+                .filter(|clipboard| {
+                    #[cfg(all(not(target_os = "windows"), not(test)))]
+                    {
+                        let _ = clipboard;
+                        true
+                    }
+                    #[cfg(any(target_os = "windows", test))]
+                    {
+                        let is_image = matches!(
+                            clipboard.format.enum_value(),
+                            Ok(ClipboardFormat::ImageRgba)
+                                | Ok(ClipboardFormat::ImagePng)
+                                | Ok(ClipboardFormat::ImageSvg)
+                        );
+                        if !is_image {
+                            return true;
+                        }
+                        let keep = !image_seen;
+                        image_seen = true;
+                        keep
+                    }
+                })
                 .collect(),
             ..Default::default()
         }
@@ -785,8 +832,6 @@ mod proto {
         let width = clipboard.width;
         let height = clipboard.height;
         let special_name = clipboard.special_name;
-        #[cfg(target_os = "windows")]
-        let is_keyboard_image = special_name == super::KEYBOARD_IMAGE_PASTE_MARKER;
         let data = if clipboard.compress {
             decompress(&clipboard.content)
         } else {
@@ -802,15 +847,6 @@ mod proto {
                 data.into(),
             ))),
             Ok(ClipboardFormat::ImagePng) => {
-                #[cfg(target_os = "windows")]
-                if is_keyboard_image {
-                    let (width, height, rgba) = keyboard_png_to_rgba(&data)?;
-                    return Some(ClipboardData::Image(arboard::ImageData::rgba(
-                        width,
-                        height,
-                        rgba.into(),
-                    )));
-                }
                 Some(ClipboardData::Image(arboard::ImageData::png(data.into())))
             }
             Ok(ClipboardFormat::ImageSvg) => Some(ClipboardData::Image(arboard::ImageData::svg(
@@ -826,16 +862,14 @@ mod proto {
         multi_clipboards
             .into_iter()
             .flat_map(|clipboard| {
-                #[cfg(target_os = "windows")]
-                if clipboard.format.enum_value() == Ok(ClipboardFormat::ImagePng)
-                    && clipboard.special_name == super::KEYBOARD_IMAGE_PASTE_MARKER
-                {
+                #[cfg(any(target_os = "windows", test))]
+                if clipboard.format.enum_value() == Ok(ClipboardFormat::ImagePng) {
                     let data = if clipboard.compress {
                         decompress(&clipboard.content)
                     } else {
                         clipboard.content.into()
                     };
-                    return keyboard_png_clipboard_data(data).unwrap_or_default();
+                    return windows_png_clipboard_data(data).unwrap_or_default();
                 }
                 from_clipboard(clipboard)
                     .into_iter()
@@ -859,36 +893,84 @@ mod proto {
         }
 
         #[test]
-        fn keyboard_png_decodes_to_bounded_rgba() {
+        fn synchronized_png_decodes_to_bounded_rgba() {
             let png = encode_png(2, 3);
-            let (width, height, rgba) = keyboard_png_to_rgba(&png).unwrap();
+            let (width, height, rgba) = bounded_png_to_rgba(&png).unwrap();
             assert_eq!((width, height), (2, 3));
             assert_eq!(rgba.len(), 2 * 3 * 4);
             assert_eq!(&rgba[..4], &[12, 34, 56, 255]);
         }
 
         #[test]
-        fn keyboard_png_offers_registered_png_before_native_bitmap() {
-            let formats = keyboard_png_clipboard_data(encode_png(2, 3)).unwrap();
+        fn synchronized_png_offers_registered_png_before_native_bitmap() {
+            let formats = windows_png_clipboard_data(encode_png(2, 3)).unwrap();
             assert_eq!(formats.len(), 2);
             assert!(matches!(
                 &formats[0],
                 ClipboardData::Special((name, data))
-                    if name == WINDOWS_PNG_CLIPBOARD_FORMAT && !data.is_empty()
+                    if name == super::super::WINDOWS_PNG_CLIPBOARD_FORMAT && !data.is_empty()
             ));
             assert!(matches!(&formats[1], ClipboardData::Image(_)));
         }
 
         #[test]
-        fn keyboard_png_rejects_oversized_dimensions() {
+        fn synchronized_png_rejects_oversized_dimensions() {
             let png = encode_png(MAX_KEYBOARD_IMAGE_DIMENSION + 1, 1);
-            assert!(keyboard_png_to_rgba(&png).is_none());
+            assert!(bounded_png_to_rgba(&png).is_none());
         }
 
         #[test]
-        fn keyboard_png_rejects_invalid_or_oversized_payloads() {
-            assert!(keyboard_png_to_rgba(b"not a png").is_none());
-            assert!(keyboard_png_to_rgba(&vec![0; MAX_KEYBOARD_IMAGE_BYTES + 1]).is_none());
+        fn synchronized_png_rejects_invalid_or_oversized_payloads() {
+            assert!(bounded_png_to_rgba(b"not a png").is_none());
+            assert!(bounded_png_to_rgba(&vec![0; MAX_KEYBOARD_IMAGE_BYTES + 1]).is_none());
+        }
+
+        #[test]
+        fn windows_png_source_is_normalized_and_deduplicated() {
+            let png = encode_png(2, 3);
+            let clips = create_multi_clipboards(vec![
+                ClipboardData::Special((
+                    super::super::WINDOWS_PNG_CLIPBOARD_FORMAT.to_owned(),
+                    png.clone(),
+                )),
+                ClipboardData::Image(arboard::ImageData::png(png.clone().into())),
+                ClipboardData::Image(arboard::ImageData::rgba(2, 3, vec![12; 2 * 3 * 4].into())),
+            ]);
+
+            assert_eq!(clips.clipboards.len(), 1);
+            assert_eq!(
+                clips.clipboards[0].format.enum_value(),
+                Ok(ClipboardFormat::ImagePng)
+            );
+            assert_eq!(clips.clipboards[0].content.as_ref(), png.as_slice());
+        }
+
+        #[test]
+        fn normal_desktop_png_expands_to_windows_png_and_native_bitmap() {
+            let png = encode_png(2, 3);
+            let formats = from_multi_clipboards(vec![Clipboard {
+                content: png.clone().into(),
+                format: ClipboardFormat::ImagePng.into(),
+                ..Default::default()
+            }]);
+
+            assert_eq!(formats.len(), 2);
+            assert!(matches!(
+                &formats[0],
+                ClipboardData::Special((name, data))
+                    if name == super::super::WINDOWS_PNG_CLIPBOARD_FORMAT && data == &png
+            ));
+            assert!(matches!(&formats[1], ClipboardData::Image(_)));
+        }
+
+        #[test]
+        fn uncompressed_special_format_keeps_its_payload() {
+            let payload = vec![1, 2, 3];
+            let clipboard = special_to_proto(payload.clone(), "custom-format".to_owned()).unwrap();
+
+            assert!(!clipboard.compress);
+            assert_eq!(clipboard.content.as_ref(), payload.as_slice());
+            assert_eq!(clipboard.special_name, "custom-format");
         }
     }
 
@@ -1059,7 +1141,10 @@ pub mod clipboard_listener {
         if let Some((shutdown, h)) = listener.handle.take() {
             log::warn!("Cleaning up stale clipboard listener handle");
             if let Err(e) = h.join() {
-                log::error!("Clipboard listener thread panicked during stale cleanup: {:?}", e);
+                log::error!(
+                    "Clipboard listener thread panicked during stale cleanup: {:?}",
+                    e
+                );
             }
             drop(shutdown);
         }
