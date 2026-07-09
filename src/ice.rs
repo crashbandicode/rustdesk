@@ -308,23 +308,99 @@ pub fn source_ip_for(peer: std::net::IpAddr) -> Option<std::net::IpAddr> {
         .filter(|ip| !ip.is_loopback() && !ip.is_unspecified())
 }
 
-/// Whether two IPv4 addresses look like they share a directly-reachable private
-/// LAN (same /24). Used together with [`source_ip_for`] to confirm a peer host
-/// candidate is reachable over a local network rather than routed away.
-pub fn same_lan_v4(a: std::net::Ipv4Addr, b: std::net::Ipv4Addr) -> bool {
+/// Classification for a host candidate that the OS can reach on one of our
+/// interface subnets. Physical RFC1918 LANs deliberately rank above overlays so
+/// a phone on Wi-Fi does not take an avoidable NetBird hop to a peer on the same
+/// access network.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum DirectCandidateKind {
+    Overlay,
+    Lan,
+}
+
+impl DirectCandidateKind {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Overlay => "overlay",
+            Self::Lan => "LAN",
+        }
+    }
+}
+
+/// Classify a peer that is on the supplied local-interface subnet. A zero
+/// netmask is intentionally rejected: some Android fallbacks expose `/0` when
+/// they could not determine the prefix, and treating it as on-link would accept
+/// every address reachable through the default route.
+pub fn candidate_kind_for_subnet(
+    source: std::net::Ipv4Addr,
+    peer: std::net::Ipv4Addr,
+    netmask: std::net::Ipv4Addr,
+) -> Option<DirectCandidateKind> {
+    let mask = u32::from(netmask);
+    if mask == 0 || (u32::from(source) & mask) != (u32::from(peer) & mask) {
+        return None;
+    }
+    Some(if source.is_private() && peer.is_private() {
+        DirectCandidateKind::Lan
+    } else {
+        DirectCandidateKind::Overlay
+    })
+}
+
+/// Preserve the old conservative same-private-/24 check as a fallback for
+/// Android/iOS interfaces whose OS enumeration does not include a usable
+/// netmask. It must never be widened: this path has no route-prefix evidence.
+fn same_private_24(a: std::net::Ipv4Addr, b: std::net::Ipv4Addr) -> bool {
     a.is_private() && b.is_private() && a.octets()[..3] == b.octets()[..3]
 }
 
-/// Whether the OS has a directly-connected private route to this candidate.
-/// This is stronger than the rendezvous `is_local` bit, which is unreliable
-/// behind a WebSocket reverse proxy such as Cloudflare.
-pub fn is_direct_lan_candidate(peer: SocketAddr) -> bool {
-    match (peer.ip(), source_ip_for(peer.ip())) {
-        (std::net::IpAddr::V4(peer), Some(std::net::IpAddr::V4(source))) => {
-            same_lan_v4(source, peer)
+/// Return the source address and kind for a peer candidate that is genuinely on
+/// one of our interface subnets. This admits routed overlays such as NetBird's
+/// `100.88.0.0/16`, which Rust does not consider RFC1918 private space, without
+/// mistaking an address reachable only through the default route for local.
+pub fn direct_candidate_route(
+    peer: std::net::IpAddr,
+) -> Option<(std::net::IpAddr, DirectCandidateKind)> {
+    let peer = match peer {
+        std::net::IpAddr::V4(peer) => peer,
+        _ => return None,
+    };
+    let source = match source_ip_for(peer.into()) {
+        Some(std::net::IpAddr::V4(source)) => source,
+        _ => return None,
+    };
+
+    #[cfg(not(target_os = "ios"))]
+    for itf in default_net::get_interfaces() {
+        for network in &itf.ipv4 {
+            if network.addr == source {
+                if let Some(kind) = candidate_kind_for_subnet(source, peer, network.netmask) {
+                    return Some((source.into(), kind));
+                }
+            }
         }
-        _ => false,
     }
+
+    if same_private_24(source, peer) {
+        return Some((source.into(), DirectCandidateKind::Lan));
+    }
+    None
+}
+
+/// Whether a new directly-reachable host candidate should replace the current
+/// choice. Scan every candidate and use this instead of trusting interface
+/// enumeration order, which differs between Android, Windows, and VPN clients.
+pub fn should_replace_direct_candidate(
+    current: Option<DirectCandidateKind>,
+    candidate: DirectCandidateKind,
+) -> bool {
+    current.map(|kind| candidate > kind).unwrap_or(true)
+}
+
+/// Whether the OS has an on-link LAN/overlay route to this candidate. This is
+/// stronger than rendezvous `is_local`, which is unreliable behind Cloudflare.
+pub fn is_direct_lan_candidate(peer: SocketAddr) -> bool {
+    direct_candidate_route(peer.ip()).is_some()
 }
 
 /// A symmetric peer should relay immediately unless ICE has already selected
@@ -436,19 +512,66 @@ mod tests {
     }
 
     #[test]
-    fn same_lan_v4_works() {
+    fn candidate_host_only_survives_stun_failure() {
+        let hosts = vec!["192.168.0.141:41000".to_owned()];
+        let enc = encode_candidates(&hosts, None);
+        assert_eq!(enc, "h=192.168.0.141:41000");
+        let c = parse_candidates(&enc);
+        assert_eq!(c.hosts, vec!["192.168.0.141:41000".parse().unwrap()]);
+        assert_eq!(c.srflx, None);
+    }
+
+    #[test]
+    fn interface_subnet_classifies_lan_and_netbird() {
         use std::net::Ipv4Addr;
-        assert!(same_lan_v4(
-            Ipv4Addr::new(192, 168, 0, 191),
-            Ipv4Addr::new(192, 168, 0, 141)
+        assert_eq!(
+            candidate_kind_for_subnet(
+                Ipv4Addr::new(192, 168, 0, 166),
+                Ipv4Addr::new(192, 168, 0, 141),
+                Ipv4Addr::new(255, 255, 255, 0),
+            ),
+            Some(DirectCandidateKind::Lan)
+        );
+        assert_eq!(
+            candidate_kind_for_subnet(
+                Ipv4Addr::new(100, 88, 233, 107),
+                Ipv4Addr::new(100, 88, 93, 17),
+                Ipv4Addr::new(255, 255, 0, 0),
+            ),
+            Some(DirectCandidateKind::Overlay)
+        );
+    }
+
+    #[test]
+    fn interface_subnet_rejects_mismatch_and_unknown_prefix() {
+        use std::net::Ipv4Addr;
+        assert_eq!(
+            candidate_kind_for_subnet(
+                Ipv4Addr::new(192, 168, 0, 166),
+                Ipv4Addr::new(192, 168, 1, 141),
+                Ipv4Addr::new(255, 255, 255, 0),
+            ),
+            None
+        );
+        assert_eq!(
+            candidate_kind_for_subnet(
+                Ipv4Addr::new(10, 125, 220, 163),
+                Ipv4Addr::new(192, 168, 0, 141),
+                Ipv4Addr::UNSPECIFIED,
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn physical_lan_outranks_overlay() {
+        assert!(should_replace_direct_candidate(
+            Some(DirectCandidateKind::Overlay),
+            DirectCandidateKind::Lan
         ));
-        assert!(!same_lan_v4(
-            Ipv4Addr::new(192, 168, 0, 191),
-            Ipv4Addr::new(192, 168, 1, 141)
-        ));
-        assert!(!same_lan_v4(
-            Ipv4Addr::new(8, 8, 8, 8),
-            Ipv4Addr::new(8, 8, 8, 9)
+        assert!(!should_replace_direct_candidate(
+            Some(DirectCandidateKind::Lan),
+            DirectCandidateKind::Overlay
         ));
     }
 
