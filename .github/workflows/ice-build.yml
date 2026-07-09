@@ -312,10 +312,11 @@ jobs:
           # ubuntu-24.04 already ships the Android host toolchain. Avoid a full
           # Linux desktop dependency install (GTK/GStreamer/Pulse/X11) in this
           # cross-compile job. Bindgen still needs the host multilib headers.
-          sudo apt-get install -y --no-install-recommends gcc-multilib g++-multilib
+          sudo apt-get install -y --no-install-recommends gcc-multilib g++-multilib nasm
           command -v clang
           command -v cmake
           command -v ninja
+          command -v nasm
           command -v java
           command -v pkg-config
 
