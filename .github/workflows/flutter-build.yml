@@ -26,7 +26,9 @@ env:
   SCITER_NASM_DEBVERSION: "2.15.05-1"
   LLVM_VERSION: "15.0.6"
   FLUTTER_VERSION: "3.24.5"
-  ANDROID_FLUTTER_VERSION: "3.24.5"
+  # Android targets API 35 and uses the current Gradle/AGP stack, which requires
+  # a Flutter toolchain new enough to compile its bundled Gradle plugin.
+  ANDROID_FLUTTER_VERSION: "3.44.4"
   # Windows arm64 only: the first stable Flutter to ship a native arm64 Windows Dart SDK +
   # engine is 3.44. Every other platform stays on FLUTTER_VERSION (3.24.5) until Windows 7
   # support is restored after the upstream-wide Flutter bump. The arm64 job patches the few
@@ -996,6 +998,10 @@ jobs:
         with:
           submodules: recursive
 
+      - name: Patch RustDesk sources for Flutter 3.44
+        shell: bash
+        run: bash .github/patches/apply_flutter_3.44_source_patches.sh
+
       - name: Install flutter
         uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2 # v2
         with:
@@ -1051,7 +1057,7 @@ jobs:
       - name: Restore bridge files
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
-          name: bridge-artifact
+          name: bridge-artifact-flutter-3.44
           path: ./
 
       - name: Install Rust toolchain
@@ -1268,6 +1274,10 @@ jobs:
         with:
           submodules: recursive
 
+      - name: Patch RustDesk sources for Flutter 3.44
+        shell: bash
+        run: bash .github/patches/apply_flutter_3.44_source_patches.sh
+
       - name: Install flutter
         uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2 # v2
         with:
@@ -1282,7 +1292,7 @@ jobs:
       - name: Restore bridge files
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
-          name: bridge-artifact
+          name: bridge-artifact-flutter-3.44
           path: ./
 
       - name: Download Rustdesk library from Artifacts
