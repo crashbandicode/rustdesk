@@ -55,6 +55,11 @@ pub type NotifyMessageBox = fn(String, String, String, String) -> dyn Future<Out
 // the executable name of the portable version
 pub const PORTABLE_APPNAME_RUNTIME_ENV_KEY: &str = "RUSTDESK_APPNAME";
 
+/// Marks an image clipboard update that must finish before a following paste key event is handled.
+/// This is a protocol-level marker and must remain available on every platform, including iOS where
+/// the native clipboard module itself is not compiled.
+pub const KEYBOARD_IMAGE_PASTE_MARKER: &str = "dyn.com.rustdesk.keyboard-image-paste";
+
 pub const PLATFORM_WINDOWS: &str = "Windows";
 pub const PLATFORM_LINUX: &str = "Linux";
 pub const PLATFORM_MACOS: &str = "Mac OS";
