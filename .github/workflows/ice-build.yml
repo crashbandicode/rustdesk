@@ -49,7 +49,7 @@ jobs:
           # Bridge output depends on the exported FFI surface and shared Flutter
           # types, not every Rust implementation file. Keeping normal client/ICE
           # edits out of this key avoids a serial codegen job on most builds.
-          key: bridge-output-v2-${{ env.BRIDGE_FLUTTER_VERSION }}-${{ env.FLUTTER_RUST_BRIDGE_VERSION }}-${{ hashFiles('src/flutter_ffi.rs', 'src/flutter.rs', 'libs/hbb_common/protos/**/*.proto', 'Cargo.lock') }}
+          key: bridge-output-v3-${{ env.BRIDGE_FLUTTER_VERSION }}-${{ env.FLUTTER_RUST_BRIDGE_VERSION }}-${{ hashFiles('src/flutter_ffi.rs', 'src/flutter.rs', 'libs/hbb_common/protos/**/*.proto', 'Cargo.lock', 'flutter/pubspec.yaml', '.github/patches/apply_flutter_3.44_source_patches.sh') }}
 
       - name: Install prerequisites
         if: steps.bridge-output-cache.outputs.cache-hit != 'true'
@@ -119,6 +119,7 @@ jobs:
         if: steps.bridge-output-cache.outputs.cache-hit != 'true'
         shell: bash
         run: |
+          bash .github/patches/apply_flutter_3.44_source_patches.sh
           pushd flutter && flutter pub get && popd
 
       - name: Run flutter rust bridge
@@ -324,6 +325,10 @@ jobs:
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           submodules: recursive
+
+      - name: Patch RustDesk sources for Flutter 3.44
+        shell: bash
+        run: bash .github/patches/apply_flutter_3.44_source_patches.sh
 
       - name: Cache Android Gradle and pub dependencies
         uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5
