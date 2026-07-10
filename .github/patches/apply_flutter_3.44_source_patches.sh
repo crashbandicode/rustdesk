@@ -20,20 +20,26 @@ set -euo pipefail
 # ThemeData API renames (Flutter 3.27+):
 sed -i 's/dialogTheme: DialogTheme(/dialogTheme: DialogThemeData(/g' flutter/lib/common.dart
 sed -i 's/tabBarTheme: const TabBarTheme(/tabBarTheme: const TabBarThemeData(/g' flutter/lib/common.dart
-sed -i '/static ThemeData lightTheme = ThemeData(/,/static ThemeData darkTheme = ThemeData(/s/dialogTheme: DialogThemeData(/dialogTheme: DialogThemeData(\
-      backgroundColor: Colors.white,/' flutter/lib/common.dart
-sed -i '/static ThemeData darkTheme = ThemeData(/,/scrollbarTheme: scrollbarThemeDark,/s/dialogTheme: DialogThemeData(/dialogTheme: DialogThemeData(\
-      backgroundColor: Color(0xFF18191E),/' flutter/lib/common.dart
-# Dependency bumps required by the newer Dart/Flutter:
+# The committed 3.24 baseline already carries explicit dialog background colors; only the type
+# names differ on Flutter 3.44, so do not insert those properties a second time.
+# Dependency bumps used by the newer Dart/Flutter build paths:
+sed -i 's/qr_code_scanner_plus: \^2.0.14/qr_code_scanner_plus: ^2.2.0/' flutter/pubspec.yaml
+sed -i 's/app_links: \^6.4.1/app_links: ^7.2.0/' flutter/pubspec.yaml
 sed -i 's/extended_text: 14.0.0/extended_text: 15.0.2/' flutter/pubspec.yaml
+sed -i 's/sqflite: \^2.4.1/sqflite: ^2.4.3/' flutter/pubspec.yaml
 sed -i 's/google_fonts: \^6.2.1/google_fonts: ^8.1.0/' flutter/pubspec.yaml
+sed -i 's/flutter_plugin_android_lifecycle: 2.0.26/flutter_plugin_android_lifecycle: 2.0.35/' flutter/pubspec.yaml
 
 # Fail loudly if any expected string drifted, so we never silently build unpatched:
 grep -qF 'dialogTheme: DialogThemeData(' flutter/lib/common.dart
 grep -qF 'tabBarTheme: const TabBarThemeData(' flutter/lib/common.dart
 grep -qF 'backgroundColor: Colors.white,' flutter/lib/common.dart
 grep -qF 'backgroundColor: Color(0xFF18191E),' flutter/lib/common.dart
+grep -qF 'qr_code_scanner_plus: ^2.2.0' flutter/pubspec.yaml
+grep -qF 'app_links: ^7.2.0' flutter/pubspec.yaml
 grep -qF 'extended_text: 15.0.2' flutter/pubspec.yaml
+grep -qF 'sqflite: ^2.4.3' flutter/pubspec.yaml
 grep -qF 'google_fonts: ^8.1.0' flutter/pubspec.yaml
+grep -qF 'flutter_plugin_android_lifecycle: 2.0.35' flutter/pubspec.yaml
 
 git --no-pager diff -- flutter/lib/common.dart flutter/pubspec.yaml
