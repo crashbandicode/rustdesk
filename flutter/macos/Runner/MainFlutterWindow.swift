@@ -22,7 +22,7 @@ import texture_rgba_renderer
 // Global state for relative mouse mode
 // All properties and methods must be accessed on the main thread since they
 // interact with NSEvent monitors, CoreGraphics APIs, and Flutter channels.
-// Note: We avoid @MainActor to maintain macOS 10.14 compatibility.
+// Note: We avoid @MainActor to maintain compatibility with the macOS 10.15 minimum.
 class RelativeMouseState {
     static let shared = RelativeMouseState()
 
