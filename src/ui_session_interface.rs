@@ -982,7 +982,7 @@ impl<T: InvokeUiSession> Session<T> {
         let clipboard = Clipboard {
             content: Bytes::copy_from_slice(png),
             format: ClipboardFormat::ImagePng.into(),
-            special_name: crate::clipboard::KEYBOARD_IMAGE_PASTE_MARKER.to_owned(),
+            special_name: crate::common::KEYBOARD_IMAGE_PASTE_MARKER.to_owned(),
             ..Default::default()
         };
         let mut message = Message::new();
