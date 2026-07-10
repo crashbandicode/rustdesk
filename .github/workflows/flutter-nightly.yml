@@ -6,6 +6,11 @@ on:
     - cron: "0 0 * * *"
   workflow_dispatch:
 
+# Scheduled workflows receive a read-only token unless explicitly elevated. The reusable build
+# publishes assets to the rolling nightly release, so only repository contents write access is needed.
+permissions:
+  contents: write
+
 jobs:
   run-flutter-nightly-build:
     uses: ./.github/workflows/flutter-build.yml
