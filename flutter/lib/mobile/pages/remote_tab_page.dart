@@ -1,5 +1,7 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_hbb/common.dart';
+import 'package:flutter_hbb/models/state_model.dart';
 import 'package:uuid/uuid.dart';
 
 import 'remote_page.dart';
@@ -90,12 +92,12 @@ class _MobileConnectionTabPageState extends State<MobileConnectionTabPage> {
     );
     controller.dispose();
 
-    var normalizedId = id?.replaceAll(' ', '');
-    if (normalizedId == null || normalizedId.isEmpty || !mounted) return;
-    final forceRelay = normalizedId.endsWith('/r');
-    if (forceRelay) {
-      normalizedId = normalizedId.substring(0, normalizedId.length - 2);
-    }
+    final candidateId = id?.replaceAll(' ', '');
+    if (candidateId == null || candidateId.isEmpty || !mounted) return;
+    final forceRelay = candidateId.endsWith('/r');
+    final normalizedId = forceRelay
+        ? candidateId.substring(0, candidateId.length - 2)
+        : candidateId;
     if (normalizedId.isEmpty) return;
 
     final existing = _sessions.indexWhere((e) => e.id == normalizedId);
