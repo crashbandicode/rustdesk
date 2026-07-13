@@ -25,7 +25,7 @@ void clientClose(SessionID sessionId, FFI ffi) async {
     if (await showConnEndAuditDialogCloseCanceled(ffi: ffi)) {
       return;
     }
-    closeConnection();
+    ffi.requestClose();
   } else {
     msgBox(sessionId, 'info', 'Close', 'Are you sure to close the connection?',
         '', ffi.dialogManager);
@@ -901,7 +901,7 @@ void wrongPasswordDialog(SessionID sessionId,
   dialogManager.show((setState, close, context) {
     cancel() {
       close();
-      closeConnection();
+      FFI.requestCloseForSession(sessionId);
     }
 
     submit() {
@@ -999,7 +999,7 @@ _connectDialog(
   dialogManager.show((setState, close, context) {
     cancel() {
       close();
-      closeConnection();
+      FFI.requestCloseForSession(sessionId);
     }
 
     submit() {
@@ -1020,7 +1020,7 @@ _connectDialog(
         bind.sessionPeerOption(
             sessionId: sessionId, name: 'os-password', value: osPassword);
       }
-      gFFI.login(
+      (FFI.findBySessionId(sessionId) ?? gFFI).login(
         osUsername,
         osPassword,
         sessionId,
@@ -1029,7 +1029,7 @@ _connectDialog(
       );
       close();
       dialogManager.showLoading(translate('Logging in...'),
-          onCancel: closeConnection);
+          onCancel: () => FFI.requestCloseForSession(sessionId));
     }
 
     descWidget(String text) {
@@ -1416,7 +1416,7 @@ void showWaitAcceptDialog(SessionID sessionId, String type, String title,
   dialogManager.dismissAll();
   dialogManager.show((setState, close, context) {
     onCancel() {
-      closeConnection();
+      FFI.requestCloseForSession(sessionId);
     }
 
     return CustomAlertDialog(
@@ -1924,7 +1924,7 @@ void showConfirmSwitchSidesDialog(
   dialogManager.show((setState, close, context) {
     submit() async {
       await bind.sessionSwitchSides(sessionId: sessionId);
-      closeConnection(id: id);
+      FFI.requestCloseForSession(sessionId);
     }
 
     return CustomAlertDialog(
@@ -2384,14 +2384,15 @@ void enter2FaDialog(
   dialogManager.show((setState, close, context) {
     cancel() {
       close();
-      closeConnection();
+      FFI.requestCloseForSession(sessionId);
     }
 
     submit() {
-      gFFI.send2FA(sessionId, controller.text.trim(), trustThisDevice.value);
+      (FFI.findBySessionId(sessionId) ?? gFFI)
+          .send2FA(sessionId, controller.text.trim(), trustThisDevice.value);
       close();
       dialogManager.showLoading(translate('Logging in...'),
-          onCancel: closeConnection);
+          onCancel: () => FFI.requestCloseForSession(sessionId));
     }
 
     late Dialog2FaField codeField;

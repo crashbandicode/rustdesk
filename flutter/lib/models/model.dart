@@ -134,6 +134,15 @@ class FfiModel with ChangeNotifier {
   WeakReference<FFI> parent;
   late final SessionID sessionId;
 
+  void _requestClose() {
+    final ffi = parent.target;
+    if (ffi != null) {
+      ffi.requestClose();
+    } else {
+      closeConnection();
+    }
+  }
+
   RxBool waitForImageDialogShow = true.obs;
   Timer? waitForImageTimer;
   RxBool waitForFirstImage = true.obs;
@@ -426,9 +435,8 @@ class FfiModel with ChangeNotifier {
       } else if (name == 'cancel_msgbox') {
         cancelMsgBox(evt, sessionId);
       } else if (name == 'switch_back') {
-        final peer_id = evt['peer_id'].toString();
         await bind.sessionSwitchSides(sessionId: sessionId);
-        closeConnection(id: peer_id);
+        _requestClose();
       } else if (name == 'portable_service_running') {
         _handlePortableServiceRunning(peerId, evt);
       } else if (name == 'on_url_scheme_received') {
@@ -1025,7 +1033,7 @@ class FfiModel with ChangeNotifier {
 
     dialogManager.dismissAll();
     dialogManager.showLoading(translate('Connecting...'),
-        onCancel: closeConnection);
+        onCancel: _requestClose);
     _transientNetworkReconnectTimer = Timer(
       Duration(seconds: _mobileAppBackgrounded ? 2 : delaySeconds),
       () {
@@ -1140,7 +1148,7 @@ class FfiModel with ChangeNotifier {
     if (showNoteEdit) {
       await showConnEndAuditDialogCloseCanceled(
           ffi: parent.target!, type: type, title: title, text: text);
-      closeConnection();
+      _requestClose();
     } else {
       VoidCallback? onSubmit;
       if (noteAllowed && hasRetry) {
@@ -1150,7 +1158,7 @@ class FfiModel with ChangeNotifier {
           _timer = null;
           await showConnEndAuditDialogCloseCanceled(
               ffi: ffi, type: type, title: title, text: text);
-          closeConnection();
+          _requestClose();
         };
       }
       msgBox(sessionId, type, title, text, link, dialogManager,
@@ -1191,7 +1199,7 @@ class FfiModel with ChangeNotifier {
     clearPermissions();
     dialogManager.dismissAll();
     dialogManager.showLoading(translate('Connecting...'),
-        onCancel: closeConnection);
+        onCancel: _requestClose);
   }
 
   Future<void> showRelayHintDialog(
@@ -1214,13 +1222,13 @@ class FfiModel with ChangeNotifier {
           ffi: parent.target!, type: type, title: title, text: text2)) {
         return;
       }
-      closeConnection();
+      _requestClose();
       return;
     }
 
     dialogManager.show(tag: '$sessionId-$type', (setState, close, context) {
       onClose() {
-        closeConnection();
+        _requestClose();
         close();
       }
 
@@ -1252,7 +1260,7 @@ class FfiModel with ChangeNotifier {
   void showConnectedWaitingForImage(OverlayDialogManager dialogManager,
       SessionID sessionId, String type, String title, String text) {
     onClose() {
-      closeConnection();
+      _requestClose();
     }
 
     if (waitForFirstImage.isFalse) return;
@@ -3774,10 +3782,16 @@ enum ConnType {
 
 /// Flutter state manager and data communication with the Rust core.
 class FFI {
+  static final Map<String, FFI> _instancesBySession = {};
+
   var id = '';
   var version = '';
   var connType = ConnType.defaultConn;
   var closed = false;
+
+  /// Set by a multi-session host so close requests stay scoped to this
+  /// connection instead of navigating away from every mobile session.
+  VoidCallback? onCloseRequested;
 
   /// dialogManager use late to ensure init after main page binding [globalKey]
   late final dialogManager = OverlayDialogManager();
@@ -3812,6 +3826,7 @@ class FFI {
 
   FFI(SessionID? sId) {
     sessionId = sId ?? (isDesktop ? Uuid().v4obj() : _constSessionId);
+    _instancesBySession[sessionId.toString()] = this;
     imageModel = ImageModel(WeakReference(this));
     ffiModel = FfiModel(WeakReference(this));
     cursorModel = CursorModel(WeakReference(this));
@@ -3839,6 +3854,27 @@ class FFI {
         getInitPeers: null);
     lanPeersModel = Peers(
         name: PeersModelName.lan, loadEvent: LoadEvent.lan, getInitPeers: null);
+  }
+
+  void requestClose() {
+    final callback = onCloseRequested;
+    if (callback != null) {
+      callback();
+    } else {
+      closeConnection();
+    }
+  }
+
+  static FFI? findBySessionId(SessionID sessionId) =>
+      _instancesBySession[sessionId.toString()];
+
+  static void requestCloseForSession(SessionID sessionId) {
+    final ffi = findBySessionId(sessionId);
+    if (ffi != null) {
+      ffi.requestClose();
+    } else {
+      closeConnection();
+    }
   }
 
   /// Mobile reuse FFI
@@ -4114,8 +4150,8 @@ class FFI {
   /// Close the remote session.
   Future<void> close({bool closeSession = true}) async {
     closed = true;
-    if (isWeb) {
-      platformFFI.clearVideoFrameCallback();
+    if (identical(_instancesBySession[sessionId.toString()], this)) {
+      _instancesBySession.remove(sessionId.toString());
     }
     chatModel.close();
     // Close all terminal models

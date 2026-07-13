@@ -30,7 +30,7 @@ import 'package:window_size/window_size.dart' as window_size;
 import '../consts.dart';
 import 'common/widgets/overlay.dart';
 import 'mobile/pages/file_manager_page.dart';
-import 'mobile/pages/remote_page.dart';
+import 'mobile/pages/remote_tab_page.dart';
 import 'mobile/pages/view_camera_page.dart';
 import 'mobile/pages/terminal_page.dart';
 import 'desktop/pages/remote_page.dart' as desktop_remote;
@@ -1195,7 +1195,7 @@ void msgBox(SessionID sessionId, String type, String title, String text,
         value: 'N',
       );
       dialogManager.dismissAll();
-      closeConnection();
+      FFI.requestCloseForSession(sessionId);
     }
 
     void continueSession() {
@@ -1238,7 +1238,7 @@ void msgBox(SessionID sessionId, String type, String title, String text,
     } else {
       // https://github.com/rustdesk/rustdesk/blob/5e9a31340b899822090a3731769ae79c6bf5f3e5/src/ui/common.tis#L263
       if (!type.contains("custom") && desktopType != DesktopType.portForward) {
-        closeConnection();
+        FFI.requestCloseForSession(sessionId);
       }
     }
   }
@@ -2722,7 +2722,7 @@ connect(BuildContext context, String id,
         Navigator.push(
           context,
           MaterialPageRoute(
-            builder: (BuildContext context) => RemotePage(
+            builder: (BuildContext context) => MobileConnectionTabPage(
                 id: id,
                 password: password,
                 isSharedPassword: isSharedPassword,
