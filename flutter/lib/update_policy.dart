@@ -7,7 +7,8 @@ const String _githubForkDownloadPrefix =
 /// Returns whether this is the signed custom build that publishes updates from
 /// the fork's GitHub Releases channel.
 bool isGitHubForkBuildIdentity(String buildIdentity) =>
-    buildIdentity.startsWith(_githubForkBuildPrefix);
+    buildIdentity == _githubForkBuildPrefix ||
+    buildIdentity.startsWith('$_githubForkBuildPrefix ');
 
 /// Builds the matching signed Android asset URL from a validated release page.
 ///
