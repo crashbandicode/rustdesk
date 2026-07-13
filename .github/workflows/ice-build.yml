@@ -171,9 +171,11 @@ jobs:
       - name: Stamp release version
         shell: pwsh
         run: |
-          $versionFile = 'src/version.rs'
+          # hbb_common::gen_version generates src/version.rs from Cargo.toml
+          # during the Rust build, so stamp the tracked source of truth.
+          $versionFile = 'Cargo.toml'
           $content = Get-Content -Raw $versionFile
-          $content = $content -replace 'pub const VERSION: &str = ".*";', 'pub const VERSION: &str = "${{ env.RELEASE_VERSION }}";'
+          $content = $content -replace '(?m)^version = ".*"$', 'version = "${{ env.RELEASE_VERSION }}"'
           Set-Content -NoNewline $versionFile $content
 
       - name: Install LLVM and Clang
@@ -349,15 +351,16 @@ jobs:
           import re
           from pathlib import Path
 
-          path = Path("src/version.rs")
+          path = Path("Cargo.toml")
           text = path.read_text()
           text, count = re.subn(
-              r'pub const VERSION: &str = ".*";',
-              f'pub const VERSION: &str = "{os.environ["RELEASE_VERSION"]}";',
+              r'^version = ".*"$',
+              f'version = "{os.environ["RELEASE_VERSION"]}"',
               text,
+              flags=re.MULTILINE,
           )
           if count != 1:
-              raise SystemExit("Could not stamp src/version.rs")
+              raise SystemExit("Could not stamp Cargo.toml")
           path.write_text(text)
           PY
 
