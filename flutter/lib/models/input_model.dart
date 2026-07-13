@@ -24,6 +24,38 @@ import '../consts.dart';
 /// Mouse button enum.
 enum MouseButtons { left, right, wheel, back, forward }
 
+/// Where an outgoing mobile session should place the remote cursor initially.
+///
+/// The stored option is intentionally client-wide: this is a control-surface
+/// preference, rather than an attribute of a particular peer.
+enum MouseStartPosition { none, bottomLeft, bottomCenter, bottomRight }
+
+String mouseStartPositionToOption(MouseStartPosition position) {
+  switch (position) {
+    case MouseStartPosition.none:
+      return '';
+    case MouseStartPosition.bottomLeft:
+      return 'bottom-left';
+    case MouseStartPosition.bottomCenter:
+      return 'bottom-center';
+    case MouseStartPosition.bottomRight:
+      return 'bottom-right';
+  }
+}
+
+MouseStartPosition mouseStartPositionFromOption(String option) {
+  switch (option) {
+    case 'bottom-left':
+      return MouseStartPosition.bottomLeft;
+    case 'bottom-center':
+      return MouseStartPosition.bottomCenter;
+    case 'bottom-right':
+      return MouseStartPosition.bottomRight;
+    default:
+      return MouseStartPosition.none;
+  }
+}
+
 const _kMouseEventDown = 'mousedown';
 const _kMouseEventUp = 'mouseup';
 const _kMouseEventMove = 'mousemove';
@@ -1133,6 +1165,47 @@ class InputModel {
     if (!keyboardPerm) return;
     if (isViewCamera) return;
     await _sendMouseUnchecked(type, button);
+  }
+
+  /// Move the remote cursor to a selected edge position without synthesizing a
+  /// click. This deliberately sends the normal absolute-mouse move packet,
+  /// rather than deriving a local canvas coordinate, so it remains correct
+  /// when the desktop is letterboxed, zoomed, or panned.
+  Future<bool> moveMouseToStartPosition(MouseStartPosition position) async {
+    if (position == MouseStartPosition.none || !keyboardPerm || isViewCamera) {
+      return false;
+    }
+    final rect = parent.target?.ffiModel.rect;
+    if (rect == null || rect.isEmpty) return false;
+
+    final x = switch (position) {
+      MouseStartPosition.bottomLeft => rect.left,
+      MouseStartPosition.bottomCenter => rect.left + rect.width / 2,
+      MouseStartPosition.bottomRight => rect.right,
+      MouseStartPosition.none => rect.left,
+    };
+    final point = InputModel.getPointInRemoteRect(
+      true,
+      peerPlatform,
+      kPointerEventKindMouse,
+      '',
+      x,
+      rect.bottom,
+      rect,
+      buttons: 0,
+    );
+    if (point == null) return false;
+
+    await bind.sessionSendMouse(
+      sessionId: sessionId,
+      msg: json.encode(modify({
+        'type': '',
+        'buttons': '',
+        'x': '${point.x.toInt()}',
+        'y': '${point.y.toInt()}',
+      })),
+    );
+    return true;
   }
 
   void enterOrLeave(bool enter) {

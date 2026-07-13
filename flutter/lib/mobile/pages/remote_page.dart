@@ -94,6 +94,20 @@ class _RemotePageState extends State<RemotePage> with WidgetsBindingObserver {
   InputModel get inputModel => _ffi.inputModel;
   SessionID get sessionId => _ffi.sessionId;
 
+  Future<void> _applySavedMouseStartPosition() async {
+    final position = mouseStartPositionFromOption(
+        bind.mainGetLocalOption(key: kOptionMouseStartPosition));
+    if (position == MouseStartPosition.none) return;
+
+    // The first image normally arrives after the remote display rectangle is
+    // known. Retry briefly for slower peers, rather than guessing from local
+    // canvas dimensions before the screen geometry is available.
+    for (var attempt = 0; attempt < 3 && mounted; attempt++) {
+      if (await inputModel.moveMouseToStartPosition(position)) return;
+      await Future.delayed(const Duration(milliseconds: 150));
+    }
+  }
+
   final TextEditingController _textController =
       TextEditingController(text: initText);
 
@@ -137,6 +151,7 @@ class _RemotePageState extends State<RemotePage> with WidgetsBindingObserver {
       }
       _disableAndroidSoftKeyboard(
           isKeyboardVisible: keyboardVisibilityController.isVisible);
+      unawaited(_applySavedMouseStartPosition());
     });
     WidgetsBinding.instance.addObserver(this);
 
