@@ -918,13 +918,38 @@ pub fn increase_port<T: std::string::ToString>(host: T, offset: i32) -> String {
 pub const POSTFIX_SERVICE: &'static str = "_service";
 
 const GITHUB_FORK_RELEASES_API: &str =
-    "https://api.github.com/repos/crashbandicode/rustdesk/releases/latest";
+    "https://api.github.com/repos/crashbandicode/rustdesk/releases?per_page=20";
 const GITHUB_FORK_RELEASES_PAGE: &str = "https://github.com/crashbandicode/rustdesk/releases/tag/";
 
 fn is_github_fork_build() -> bool {
     option_env!("RUSTDESK_BUILD_FORK")
-        .map(|fork| fork.starts_with("crashbandicode/rustdesk"))
+        .map(|fork| fork.split_whitespace().next() == Some("crashbandicode/rustdesk"))
         .unwrap_or(false)
+}
+
+fn parse_github_fork_version(version: &str) -> Option<(u64, u64, u64, u64)> {
+    fn numeric(part: &str) -> Option<u64> {
+        if part.is_empty() || !part.chars().all(|c| c.is_ascii_digit()) {
+            return None;
+        }
+        part.parse().ok()
+    }
+
+    let (base, build) = match version.split_once('-') {
+        Some((base, build)) => (base, numeric(build)?),
+        None => (version, 0),
+    };
+    let mut parts = base.split('.');
+    let parsed = (
+        numeric(parts.next()?)?,
+        numeric(parts.next()?)?,
+        numeric(parts.next()?)?,
+        build,
+    );
+    if parts.next().is_some() {
+        return None;
+    }
+    Some(parsed)
 }
 
 #[inline]
@@ -985,65 +1010,43 @@ async fn do_check_github_fork_software_update() -> hbb_common::ResultType<()> {
         bail!("GitHub release lookup failed: {}", response.status());
     }
 
-    let release: Value = serde_json::from_slice(&response.bytes().await?)?;
-    let tag = release
-        .get("tag_name")
-        .and_then(Value::as_str)
-        .unwrap_or_default();
-    let windows_asset_name = format!("rustdesk-{tag}-x64.exe");
-    let android_asset_name = format!("rustdesk-{tag}-aarch64.apk");
-    let is_complete_release = !release
-        .get("draft")
-        .and_then(Value::as_bool)
-        .unwrap_or(true)
-        && !release
-            .get("prerelease")
-            .and_then(Value::as_bool)
-            .unwrap_or(true);
-    let has_windows_asset = release
-        .get("assets")
-        .and_then(Value::as_array)
-        .map(|assets| {
-            assets.iter().any(|asset| {
-                asset
-                    .get("name")
-                    .and_then(Value::as_str)
-                    .map(|name| name == windows_asset_name)
-                    .unwrap_or(false)
-            })
+    let releases: Vec<Value> = serde_json::from_slice(&response.bytes().await?)?;
+    // Do not trust GitHub's release creation order as version order. Select
+    // the highest complete numeric release so a newer hand-created release
+    // cannot hide the valid automated channel.
+    let candidate = releases
+        .iter()
+        .filter_map(|release| {
+            let tag = release.get("tag_name")?.as_str()?;
+            let version = parse_github_fork_version(tag)?;
+            if !tag.contains('-')
+                || release.get("draft")?.as_bool()?
+                || release.get("prerelease")?.as_bool()?
+            {
+                return None;
+            }
+            let assets = release.get("assets")?.as_array()?;
+            let windows_asset_name = format!("rustdesk-{tag}-x64.exe");
+            let android_asset_name = format!("rustdesk-{tag}-aarch64.apk");
+            let has_asset = |expected: &str| {
+                assets.iter().any(|asset| {
+                    asset.get("name").and_then(Value::as_str) == Some(expected)
+                })
+            };
+            if !has_asset(&windows_asset_name) || !has_asset(&android_asset_name) {
+                return None;
+            }
+            Some((version, release, tag))
         })
-        .unwrap_or(false);
-    let has_android_asset = release
-        .get("assets")
-        .and_then(Value::as_array)
-        .map(|assets| {
-            assets.iter().any(|asset| {
-                asset
-                    .get("name")
-                    .and_then(Value::as_str)
-                    .map(|name| name == android_asset_name)
-                    .unwrap_or(false)
-            })
-        })
-        .unwrap_or(false);
-
-    // CI emits numeric patch tags (for example 1.4.9-42). Requiring that
-    // format prevents an unrelated hand-created release from becoming an
-    // automatic update target.
-    let tag_is_valid = tag
-        .split_once('-')
-        .map(|(base, patch)| {
-            !base.is_empty()
-                && base.split('.').all(|part| part.parse::<u32>().is_ok())
-                && patch.parse::<u64>().is_ok()
-        })
-        .unwrap_or(false);
-    if !(is_complete_release && tag_is_valid && has_windows_asset && has_android_asset) {
+        .max_by_key(|(version, _, _)| *version);
+    let Some((release_version, release, tag)) = candidate else {
         *SOFTWARE_UPDATE_URL.lock().unwrap() = String::new();
         return Ok(());
-    }
+    };
+    let current_version = parse_github_fork_version(crate::VERSION)
+        .ok_or_else(|| anyhow!("Invalid current fork version: {}", crate::VERSION))?;
 
-    if get_version_number(tag) > get_version_number(crate::VERSION) {
+    if release_version > current_version {
         let response_url = release
             .get("html_url")
             .and_then(Value::as_str)
@@ -2774,6 +2777,25 @@ mod tests {
         time::{interval, interval_at, sleep, Duration, Instant, Interval},
     };
     use std::collections::HashSet;
+
+    #[test]
+    fn github_fork_versions_compare_base_before_build_number() {
+        assert!(
+            parse_github_fork_version("1.4.10-1")
+                > parse_github_fork_version("1.4.9-55")
+        );
+        assert!(
+            parse_github_fork_version("1.4.9-56")
+                > parse_github_fork_version("1.4.9-55")
+        );
+        assert_eq!(
+            parse_github_fork_version("1.4.9"),
+            Some((1, 4, 9, 0))
+        );
+        assert_eq!(parse_github_fork_version("1.4-9"), None);
+        assert_eq!(parse_github_fork_version("1.4.9-dev"), None);
+        assert_eq!(parse_github_fork_version("1.4.9-+5"), None);
+    }
 
     #[inline]
     fn get_timestamp_secs() -> u128 {
