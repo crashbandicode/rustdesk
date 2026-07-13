@@ -4080,7 +4080,24 @@ void checkUpdate() {
       kCheckSoftwareUpdateFinish, kCheckSoftwareUpdateFinish,
       (Map<String, dynamic> evt) async {
     if (evt['url'] is String) {
-      stateGlobal.updateUrl.value = evt['url'];
+      final updateUrl = evt['url'] as String;
+      stateGlobal.updateUrl.value = updateUrl;
+      if (isAndroid) {
+        final apkUrl = githubForkAndroidApkUrl(updateUrl);
+        if (apkUrl != null) {
+          // Android verifies the package/signing certificate, downloads it,
+          // then opens the system installer. The final confirmation is an
+          // Android platform requirement for sideloaded applications.
+          unawaited(
+            gFFI
+                .invokeMethod('download_and_install_apk_update', apkUrl)
+                .catchError((Object error) {
+              debugPrint('Automatic Android update failed: $error');
+              return false;
+            }),
+          );
+        }
+      }
     }
   });
   Timer(const Duration(seconds: 1), () async {
