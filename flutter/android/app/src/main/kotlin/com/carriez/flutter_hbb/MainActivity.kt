@@ -268,6 +268,14 @@ class MainActivity : FlutterActivity() {
                         }
                     }
                 }
+                "download_and_install_apk_update" -> {
+                    val url = call.arguments as? String
+                    if (url == null) {
+                        result.error("invalid-update-url", "Missing Android update URL", null)
+                    } else {
+                        GitHubUpdateInstaller(this).downloadAndPrompt(url, result)
+                    }
+                }
                 GET_START_ON_BOOT_OPT -> {
                     val prefs = getSharedPreferences(KEY_SHARED_PREFERENCES, MODE_PRIVATE)
                     result.success(prefs.getBoolean(KEY_START_ON_BOOT_OPT, false))

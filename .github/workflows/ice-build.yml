@@ -5,11 +5,14 @@ name: ICE experiment build
 # different networks:
 #   * Windows x86_64 (Flutter, portable folder)
 #   * Android arm64 (release-signed APK using the stable key in repo secrets)
-# Both are uploaded as workflow artifacts (no GitHub release is created).
+# Both are uploaded as workflow artifacts and published as a GitHub Release.
 # Versions/pins mirror flutter-build.yml + bridge.yml so we match a stock build.
 
 on:
   workflow_dispatch:
+
+permissions:
+  contents: write
 
 env:
   RUST_VERSION: "1.75"
@@ -24,6 +27,10 @@ env:
   VCPKG_COMMIT_ID: "120deac3062162151622ca4860575a33844ba10b"
   VCPKG_BINARY_SOURCES: "clear;x-gha,readwrite"
   VERSION: "1.4.9-ice"
+  # A numeric patch tracks the workflow sequence. It is used in both the
+  # compiled client version and the release tag so installed clients can tell
+  # exactly which signed fork build is newer.
+  RELEASE_VERSION: "1.4.9-${{ github.run_number }}"
   RUSTDESK_BUILD_FORK: "crashbandicode/rustdesk ICE fork (UNOFFICIAL)"
   RUSTDESK_BUILD_COMMIT: ${{ github.sha }}
 
@@ -160,6 +167,14 @@ jobs:
         with:
           name: bridge-artifact
           path: ./
+
+      - name: Stamp release version
+        shell: pwsh
+        run: |
+          $versionFile = 'src/version.rs'
+          $content = Get-Content -Raw $versionFile
+          $content = $content -replace 'pub const VERSION: &str = ".*";', 'pub const VERSION: &str = "${{ env.RELEASE_VERSION }}";'
+          Set-Content -NoNewline $versionFile $content
 
       - name: Install LLVM and Clang
         uses: KyleMayes/install-llvm-action@ebc0426251bc40c7cd31162802432c68818ab8f0 # v2.0.9
@@ -326,6 +341,26 @@ jobs:
         with:
           submodules: recursive
 
+      - name: Stamp release version
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import os
+          import re
+          from pathlib import Path
+
+          path = Path("src/version.rs")
+          text = path.read_text()
+          text, count = re.subn(
+              r'pub const VERSION: &str = ".*";',
+              f'pub const VERSION: &str = "{os.environ["RELEASE_VERSION"]}";',
+              text,
+          )
+          if count != 1:
+              raise SystemExit("Could not stamp src/version.rs")
+          path.write_text(text)
+          PY
+
       - name: Patch RustDesk sources for Flutter 3.44
         shell: bash
         run: bash .github/patches/apply_flutter_3.44_source_patches.sh
@@ -455,12 +490,61 @@ jobs:
           # Keep versionCode monotonic so every stable-key artifact can update the
           # previous sideload in place. The +100000 base stays above pubspec's +66.
           flutter build apk --release --target-platform android-arm64 --split-per-abi \
+            --build-name "$RELEASE_VERSION" \
             --build-number "$((100000 + GITHUB_RUN_NUMBER))"
-          mv build/app/outputs/flutter-apk/app-arm64-v8a-release.apk ../rustdesk-${{ env.VERSION }}-aarch64.apk
+          mv build/app/outputs/flutter-apk/app-arm64-v8a-release.apk ../rustdesk-${RELEASE_VERSION}-aarch64.apk
           popd
 
       - name: Upload Android apk
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: rustdesk-ice-android-aarch64
-          path: ./rustdesk-${{ env.VERSION }}-aarch64.apk
+          path: ./rustdesk-${{ env.RELEASE_VERSION }}-aarch64.apk
+
+  publish-release:
+    name: publish signed GitHub release
+    needs: [build-windows, build-android]
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: write
+    steps:
+      - name: Download Windows installer
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: rustdesk-ice-windows-installer
+          path: release/windows
+
+      - name: Download Android APK
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: rustdesk-ice-android-aarch64
+          path: release/android
+
+      - name: Prepare release assets
+        shell: bash
+        run: |
+          set -euo pipefail
+          windows_installer="$(find release/windows -type f -name 'rustdesk-*-install.exe' -print -quit)"
+          android_apk="$(find release/android -type f -name 'rustdesk-*-aarch64.apk' -print -quit)"
+          test -n "$windows_installer"
+          test -n "$android_apk"
+          cp "$windows_installer" "release/rustdesk-${RELEASE_VERSION}-x64.exe"
+          cp "$android_apk" "release/rustdesk-${RELEASE_VERSION}-aarch64.apk"
+          (
+            cd release
+            sha256sum "rustdesk-${RELEASE_VERSION}-x64.exe" "rustdesk-${RELEASE_VERSION}-aarch64.apk" > SHA256SUMS.txt
+          )
+
+      - name: Create or update GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          notes="Automated signed RustDesk ICE fork build from ${GITHUB_SHA}."
+          if gh release view "$RELEASE_VERSION" >/dev/null 2>&1; then
+            gh release upload "$RELEASE_VERSION" release/* --clobber
+            gh release edit "$RELEASE_VERSION" --title "RustDesk ICE ${RELEASE_VERSION}" --notes "$notes"
+          else
+            gh release create "$RELEASE_VERSION" release/* --title "RustDesk ICE ${RELEASE_VERSION}" --notes "$notes"
+          fi
