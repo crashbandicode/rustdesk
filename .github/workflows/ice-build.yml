@@ -1,8 +1,7 @@
-name: ICE experiment build
+name: RustDesk fork client build
 
-# Focused build for the experiment/ice-candidate-traversal branch.
-# Produces just the two clients needed to test ICE-style NAT traversal across
-# different networks:
+# Mainline build for the crashbandicode RustDesk fork. Produces the two clients
+# used by this deployment:
 #   * Windows x86_64 (Flutter, portable folder)
 #   * Android arm64 (release-signed APK using the stable key in repo secrets)
 # Both are uploaded as workflow artifacts and published as a GitHub Release.
@@ -12,7 +11,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: write
+  contents: read
 
 env:
   RUST_VERSION: "1.75"
@@ -224,6 +223,17 @@ jobs:
           sed -i -e 's/dialogTheme: DialogThemeData(/dialogTheme: DialogTheme(/g' flutter/lib/common.dart
           sed -i -e 's/tabBarTheme: const TabBarThemeData(/tabBarTheme: const TabBarTheme(/g' flutter/lib/common.dart
 
+      - name: Validate changed Flutter sources before native build
+        shell: pwsh
+        run: |
+          Push-Location flutter
+          flutter pub get
+          dart analyze --no-fatal-warnings lib/mobile/pages/remote_tab_page.dart
+          dart analyze --no-fatal-warnings lib/mobile/widgets/gesture_help.dart
+          dart analyze --no-fatal-warnings lib/common.dart
+          dart analyze --no-fatal-warnings lib/update_policy.dart
+          Pop-Location
+
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9 # v1
         with:
@@ -234,6 +244,7 @@ jobs:
       - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
         with:
           prefix-key: windows-2022
+          cache-on-failure: true
           # Keep build identity (RUSTDESK_BUILD_COMMIT) out of dependency cache keys.
           env-vars: "CARGO CC CFLAGS CXX CMAKE RUSTC RUSTUP RUSTFLAGS RUSTDOC"
 
@@ -407,6 +418,17 @@ jobs:
           name: bridge-artifact
           path: ./
 
+      - name: Validate changed Flutter sources before native build
+        shell: bash
+        run: |
+          pushd flutter
+          flutter pub get
+          dart analyze --no-fatal-warnings lib/mobile/pages/remote_tab_page.dart
+          dart analyze --no-fatal-warnings lib/mobile/widgets/gesture_help.dart
+          dart analyze --no-fatal-warnings lib/common.dart
+          dart analyze --no-fatal-warnings lib/update_policy.dart
+          popd
+
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9 # v1
         with:
@@ -417,6 +439,7 @@ jobs:
         with:
           prefix-key: rustdesk-lib-cache-android
           key: aarch64-linux-android
+          cache-on-failure: true
           # Keep build identity (RUSTDESK_BUILD_COMMIT) out of dependency cache keys.
           env-vars: "CARGO CC CFLAGS CXX CMAKE RUSTC RUSTUP RUSTFLAGS RUSTDOC"
 
@@ -475,8 +498,9 @@ jobs:
           path: ./rustdesk-${{ env.RELEASE_VERSION }}-aarch64.apk
 
   publish-release:
-    name: publish signed GitHub release
+    name: publish GitHub release
     needs: [build-windows, build-android]
+    if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-22.04
     permissions:
       contents: write
@@ -514,10 +538,15 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          notes="Automated signed RustDesk ICE fork build from ${GITHUB_SHA}."
+          assets=(
+            "release/rustdesk-${RELEASE_VERSION}-x64.exe"
+            "release/rustdesk-${RELEASE_VERSION}-aarch64.apk"
+            "release/SHA256SUMS.txt"
+          )
+          notes="Automated RustDesk ICE fork build from ${GITHUB_SHA}. The Android APK uses the fork's stable signing certificate."
           if gh release view "$RELEASE_VERSION" >/dev/null 2>&1; then
-            gh release upload "$RELEASE_VERSION" release/* --clobber
+            gh release upload "$RELEASE_VERSION" "${assets[@]}" --clobber
             gh release edit "$RELEASE_VERSION" --title "RustDesk ICE ${RELEASE_VERSION}" --notes "$notes"
           else
-            gh release create "$RELEASE_VERSION" release/* --title "RustDesk ICE ${RELEASE_VERSION}" --notes "$notes"
+            gh release create "$RELEASE_VERSION" "${assets[@]}" --target "$GITHUB_SHA" --title "RustDesk ICE ${RELEASE_VERSION}" --notes "$notes"
           fi

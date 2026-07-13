@@ -106,12 +106,24 @@ fn apply_release_version_override() {
 
     let version_path = "./src/version.rs";
     let generated = std::fs::read_to_string(version_path).unwrap();
-    let build_date = generated.split_once('\n').map(|(_, rest)| rest).unwrap_or("");
-    std::fs::write(
-        version_path,
-        format!("pub const VERSION: &str = \"{version}\";\n{build_date}"),
-    )
-    .unwrap();
+    let mut replaced = false;
+    let mut updated = generated
+        .lines()
+        .map(|line| {
+            if line.starts_with("pub const VERSION: &str = ") {
+                replaced = true;
+                format!("pub const VERSION: &str = \"{version}\";")
+            } else {
+                line.to_owned()
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(replaced, "generated version.rs did not contain VERSION");
+    if generated.ends_with('\n') {
+        updated.push('\n');
+    }
+    std::fs::write(version_path, updated).unwrap();
 }
 
 fn main() {

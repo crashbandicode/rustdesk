@@ -1,12 +1,14 @@
 package com.carriez.flutter_hbb
 
 import android.app.Activity
+import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageInfo
 import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Build
 import android.provider.Settings
+import android.util.Log
 import androidx.core.content.FileProvider
 import io.flutter.plugin.common.MethodChannel
 import java.io.BufferedInputStream
@@ -15,6 +17,7 @@ import java.io.FileOutputStream
 import java.net.HttpURLConnection
 import java.net.URL
 import java.security.MessageDigest
+import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.concurrent.thread
 
 /**
@@ -26,9 +29,13 @@ import kotlin.concurrent.thread
 class GitHubUpdateInstaller(private val activity: Activity) {
     companion object {
         private const val MAX_APK_BYTES = 250L * 1024L * 1024L
+        private const val PREFS_NAME = "github_update_installer"
+        private const val PENDING_APK_KEY = "pending_apk_path"
         private val RELEASE_APK_URL = Regex(
             """^https://github\.com/crashbandicode/rustdesk/releases/download/(\d+\.\d+\.\d+-\d+)/rustdesk-\1-aarch64\.apk$"""
         )
+        private val updateInProgress = AtomicBoolean(false)
+        @Volatile private var pendingApkPath: String? = null
     }
 
     fun downloadAndPrompt(url: String, result: MethodChannel.Result) {
@@ -36,46 +43,90 @@ class GitHubUpdateInstaller(private val activity: Activity) {
             result.error("invalid-update-url", "Update is not a signed fork release", null)
             return
         }
+        if (!updateInProgress.compareAndSet(false, true)) {
+            result.success(mapOf("status" to "already-running"))
+            return
+        }
         thread(name = "rustdesk-github-updater") {
             try {
                 val apk = download(url)
                 verifyPackageAndSigner(apk)
                 activity.runOnUiThread {
-                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O &&
-                        !activity.packageManager.canRequestPackageInstalls()
-                    ) {
-                        activity.startActivity(
-                            Intent(Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES).apply {
-                                data = Uri.parse("package:${activity.packageName}")
-                            }
+                    try {
+                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O &&
+                            !activity.packageManager.canRequestPackageInstalls()
+                        ) {
+                            pendingApkPath = apk.absolutePath
+                            activity.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+                                .edit()
+                                .putString(PENDING_APK_KEY, apk.absolutePath)
+                                .apply()
+                            activity.startActivity(
+                                Intent(Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES).apply {
+                                    data = Uri.parse("package:${activity.packageName}")
+                                }
+                            )
+                            result.success(mapOf("status" to "permission-required"))
+                        } else {
+                            openInstaller(apk)
+                            result.success(mapOf("status" to "installer-started"))
+                        }
+                    } catch (e: Exception) {
+                        result.error(
+                            "update-failed",
+                            e.message ?: "Unable to open the Android installer",
+                            null
                         )
-                        result.success(mapOf("status" to "permission-required"))
-                    } else {
-                        val contentUri = FileProvider.getUriForFile(
-                            activity,
-                            "${activity.packageName}.fileprovider",
-                            apk
-                        )
-                        activity.startActivity(
-                            Intent(Intent.ACTION_VIEW)
-                                .setDataAndType(
-                                    contentUri,
-                                    "application/vnd.android.package-archive"
-                                )
-                                .addFlags(
-                                    Intent.FLAG_ACTIVITY_NEW_TASK or
-                                        Intent.FLAG_GRANT_READ_URI_PERMISSION
-                                )
-                        )
-                        result.success(mapOf("status" to "installer-started"))
+                    } finally {
+                        updateInProgress.set(false)
                     }
                 }
             } catch (e: Exception) {
                 activity.runOnUiThread {
+                    updateInProgress.set(false)
                     result.error("update-failed", e.message ?: "Unable to install update", null)
                 }
             }
         }
+    }
+
+    /** Continue automatically after the user grants install-unknown-apps access. */
+    fun promptPendingIfAllowed() {
+        val preferences = activity.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        val path = pendingApkPath ?: preferences.getString(PENDING_APK_KEY, null) ?: return
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O &&
+            !activity.packageManager.canRequestPackageInstalls()
+        ) {
+            return
+        }
+        val apk = File(path)
+        if (apk.isFile) {
+            try {
+                openInstaller(apk)
+            } catch (e: Exception) {
+                Log.e("GitHubUpdateInstaller", "Unable to resume update install", e)
+            }
+        }
+    }
+
+    private fun openInstaller(apk: File) {
+        pendingApkPath = null
+        activity.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+            .edit()
+            .remove(PENDING_APK_KEY)
+            .apply()
+        val contentUri = FileProvider.getUriForFile(
+            activity,
+            "${activity.packageName}.fileprovider",
+            apk
+        )
+        activity.startActivity(
+            Intent(Intent.ACTION_VIEW)
+                .setDataAndType(contentUri, "application/vnd.android.package-archive")
+                .addFlags(
+                    Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_GRANT_READ_URI_PERMISSION
+                )
+        )
     }
 
     private fun download(url: String): File {
@@ -100,7 +151,11 @@ class GitHubUpdateInstaller(private val activity: Activity) {
                 "Update download failed: HTTP ${connection.responseCode}"
             }
             val contentLength = connection.contentLengthLong
-            check(contentLength in 1..MAX_APK_BYTES) { "Invalid update size" }
+            // GitHub normally sends Content-Length, but redirects/CDNs may use
+            // chunked transfer. The streamed cap below remains authoritative.
+            check(contentLength == -1L || contentLength in 1..MAX_APK_BYTES) {
+                "Invalid update size"
+            }
 
             var copied = 0L
             BufferedInputStream(connection.inputStream).use { input ->
@@ -116,7 +171,10 @@ class GitHubUpdateInstaller(private val activity: Activity) {
                     output.fd.sync()
                 }
             }
-            check(copied == contentLength) { "Incomplete update download" }
+            check(copied > 0) { "Empty update download" }
+            if (contentLength >= 0) {
+                check(copied == contentLength) { "Incomplete update download" }
+            }
             if (destination.exists() && !destination.delete()) {
                 error("Unable to replace previous update")
             }
