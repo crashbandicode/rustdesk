@@ -57,12 +57,15 @@ class GestureHelp extends StatefulWidget {
 class _GestureHelpState extends State<GestureHelp> {
   late int _selectedIndex;
   late bool _touchMode;
+  late MouseStartPosition _mouseStartPosition;
   final VirtualMouseMode _virtualMouseMode;
 
   _GestureHelpState(bool touchMode, VirtualMouseMode virtualMouseMode)
       : _virtualMouseMode = virtualMouseMode {
     _touchMode = touchMode;
     _selectedIndex = _touchMode ? 1 : 0;
+    _mouseStartPosition = mouseStartPositionFromOption(
+        bind.mainGetLocalOption(key: kOptionMouseStartPosition));
   }
 
   /// Helper to exit relative mouse mode when certain conditions are met.
@@ -70,6 +73,31 @@ class _GestureHelpState extends State<GestureHelp> {
   void _exitRelativeMouseModeIf(bool condition) {
     if (condition) {
       widget.inputModel?.setRelativeMouseMode(false);
+    }
+  }
+
+  String _mouseStartPositionLabel(MouseStartPosition position) {
+    switch (position) {
+      case MouseStartPosition.none:
+        return translate('Do not move automatically');
+      case MouseStartPosition.bottomLeft:
+        return translate('Bottom left');
+      case MouseStartPosition.bottomCenter:
+        return translate('Bottom center');
+      case MouseStartPosition.bottomRight:
+        return translate('Bottom right');
+    }
+  }
+
+  Future<void> _setMouseStartPosition(MouseStartPosition position) async {
+    setState(() => _mouseStartPosition = position);
+    await bind.mainSetLocalOption(
+      key: kOptionMouseStartPosition,
+      value: mouseStartPositionToOption(position),
+    );
+    final inputModel = widget.inputModel;
+    if (inputModel != null) {
+      await inputModel.moveMouseToStartPosition(position);
     }
   }
 
@@ -150,6 +178,46 @@ class _GestureHelpState extends State<GestureHelp> {
                           ],
                         ),
                       ),
+                      if (widget.inputModel != null)
+                        Padding(
+                          padding: const EdgeInsets.only(left: 24.0),
+                          child: SizedBox(
+                            width: 260,
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                Text(translate('Start remote mouse at')),
+                                DropdownButton<MouseStartPosition>(
+                                  isExpanded: true,
+                                  value: _mouseStartPosition,
+                                  onChanged: (position) async {
+                                    if (position != null) {
+                                      await _setMouseStartPosition(position);
+                                    }
+                                  },
+                                  items: MouseStartPosition.values
+                                      .map((position) =>
+                                          DropdownMenuItem<MouseStartPosition>(
+                                            value: position,
+                                            child: Text(
+                                                _mouseStartPositionLabel(
+                                                    position)),
+                                          ))
+                                      .toList(),
+                                ),
+                                Text(
+                                  translate(
+                                      'The saved position is applied when the next session connects.'),
+                                  style: TextStyle(
+                                    fontSize: 12,
+                                    color: Theme.of(context).hintColor,
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ),
+                        ),
                       if (_touchMode && _virtualMouseMode.showVirtualMouse)
                         Padding(
                           // Indent "Virtual mouse size"
