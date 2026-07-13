@@ -181,7 +181,13 @@ fn check_update(manually: bool) -> ResultType<()> {
     }
     #[cfg(target_os = "windows")]
     let update_msi = crate::platform::is_msi_installed()? && !crate::is_custom_client();
-    if !(manually || config::Config::get_bool_option(config::keys::OPTION_ALLOW_AUTO_UPDATE)) {
+    let github_fork_build = option_env!("RUSTDESK_BUILD_FORK")
+        .map(|fork| fork.starts_with("crashbandicode/rustdesk"))
+        .unwrap_or(false);
+    if !(manually
+        || github_fork_build
+        || config::Config::get_bool_option(config::keys::OPTION_ALLOW_AUTO_UPDATE))
+    {
         return Ok(());
     }
     if do_check_software_update().is_err() {
