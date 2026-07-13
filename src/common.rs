@@ -917,6 +917,16 @@ pub fn increase_port<T: std::string::ToString>(host: T, offset: i32) -> String {
 
 pub const POSTFIX_SERVICE: &'static str = "_service";
 
+const GITHUB_FORK_RELEASES_API: &str =
+    "https://api.github.com/repos/crashbandicode/rustdesk/releases/latest";
+const GITHUB_FORK_RELEASES_PAGE: &str = "https://github.com/crashbandicode/rustdesk/releases/tag/";
+
+fn is_github_fork_build() -> bool {
+    option_env!("RUSTDESK_BUILD_FORK")
+        .map(|fork| fork.starts_with("crashbandicode/rustdesk"))
+        .unwrap_or(false)
+}
+
 #[inline]
 pub fn is_control_key(evt: &KeyEvent, key: &ControlKey) -> bool {
     if let Some(key_event::Union::ControlKey(ck)) = evt.union {
@@ -944,22 +954,125 @@ pub fn is_modifier(evt: &KeyEvent) -> bool {
 }
 
 pub fn check_software_update() {
-    // This fork has its own signed CI artifacts. Comparing its protocol-facing
-    // version with the official release channel produces a misleading banner
-    // and sends users to an incompatible download.
-    if is_custom_client() || option_env!("RUSTDESK_BUILD_FORK").is_some() {
+    // Arbitrary custom clients must not be sent to RustDesk's official channel.
+    // This signed fork is the explicit exception and queries only its own
+    // GitHub Releases channel below.
+    if is_custom_client() && !is_github_fork_build() {
         return;
     }
     let opt = LocalConfig::get_option(keys::OPTION_ENABLE_CHECK_UPDATE);
-    if config::option2bool(keys::OPTION_ENABLE_CHECK_UPDATE, &opt) {
+    if is_github_fork_build() || config::option2bool(keys::OPTION_ENABLE_CHECK_UPDATE, &opt) {
         std::thread::spawn(move || allow_err!(do_check_software_update()));
     }
+}
+
+async fn do_check_github_fork_software_update() -> hbb_common::ResultType<()> {
+    let client = create_http_client_async(TlsType::Rustls, false);
+    let response = client
+        .get(GITHUB_FORK_RELEASES_API)
+        .header(reqwest::header::ACCEPT, "application/vnd.github+json")
+        .header(reqwest::header::USER_AGENT, "RustDesk-ICE-Updater")
+        .send()
+        .await?;
+
+    // A release may not exist until the first successful build has published
+    // both platform assets. Treat that state as simply "no update".
+    if response.status() == reqwest::StatusCode::NOT_FOUND {
+        *SOFTWARE_UPDATE_URL.lock().unwrap() = String::new();
+        return Ok(());
+    }
+    if !response.status().is_success() {
+        bail!("GitHub release lookup failed: {}", response.status());
+    }
+
+    let release: Value = serde_json::from_slice(&response.bytes().await?)?;
+    let tag = release
+        .get("tag_name")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    let windows_asset_name = format!("rustdesk-{tag}-x64.exe");
+    let android_asset_name = format!("rustdesk-{tag}-aarch64.apk");
+    let is_complete_release = !release
+        .get("draft")
+        .and_then(Value::as_bool)
+        .unwrap_or(true)
+        && !release
+            .get("prerelease")
+            .and_then(Value::as_bool)
+            .unwrap_or(true);
+    let has_windows_asset = release
+        .get("assets")
+        .and_then(Value::as_array)
+        .map(|assets| {
+            assets.iter().any(|asset| {
+                asset
+                    .get("name")
+                    .and_then(Value::as_str)
+                    .map(|name| name == windows_asset_name)
+                    .unwrap_or(false)
+            })
+        })
+        .unwrap_or(false);
+    let has_android_asset = release
+        .get("assets")
+        .and_then(Value::as_array)
+        .map(|assets| {
+            assets.iter().any(|asset| {
+                asset
+                    .get("name")
+                    .and_then(Value::as_str)
+                    .map(|name| name == android_asset_name)
+                    .unwrap_or(false)
+            })
+        })
+        .unwrap_or(false);
+
+    // CI emits numeric patch tags (for example 1.4.9-42). Requiring that
+    // format prevents an unrelated hand-created release from becoming an
+    // automatic update target.
+    let tag_is_valid = tag
+        .split_once('-')
+        .map(|(base, patch)| {
+            !base.is_empty()
+                && base.split('.').all(|part| part.parse::<u32>().is_ok())
+                && patch.parse::<u64>().is_ok()
+        })
+        .unwrap_or(false);
+    if !(is_complete_release && tag_is_valid && has_windows_asset && has_android_asset) {
+        *SOFTWARE_UPDATE_URL.lock().unwrap() = String::new();
+        return Ok(());
+    }
+
+    if get_version_number(tag) > get_version_number(crate::VERSION) {
+        let response_url = release
+            .get("html_url")
+            .and_then(Value::as_str)
+            .filter(|url| url.starts_with(GITHUB_FORK_RELEASES_PAGE))
+            .map(str::to_owned)
+            .unwrap_or_else(|| format!("{GITHUB_FORK_RELEASES_PAGE}{tag}"));
+        #[cfg(feature = "flutter")]
+        {
+            let mut m = HashMap::new();
+            m.insert("name", "check_software_update_finish");
+            m.insert("url", &response_url);
+            if let Ok(data) = serde_json::to_string(&m) {
+                let _ = crate::flutter::push_global_event(crate::flutter::APP_TYPE_MAIN, data);
+            }
+        }
+        *SOFTWARE_UPDATE_URL.lock().unwrap() = response_url;
+    } else {
+        *SOFTWARE_UPDATE_URL.lock().unwrap() = String::new();
+    }
+    Ok(())
 }
 
 // No need to check `danger_accept_invalid_cert` for now.
 // Because the url is always `https://api.rustdesk.com/version/latest`.
 #[tokio::main(flavor = "current_thread")]
 pub async fn do_check_software_update() -> hbb_common::ResultType<()> {
+    if is_github_fork_build() {
+        return do_check_github_fork_software_update().await;
+    }
     let (request, url) =
         hbb_common::version_check_request(hbb_common::VER_TYPE_RUSTDESK_CLIENT.to_string());
     let proxy_conf = Config::get_socks();
