@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_hbb/common.dart';
+import 'package:flutter_hbb/models/peer_model.dart';
 import 'package:flutter_hbb/models/state_model.dart';
 import 'package:uuid/uuid.dart';
 
@@ -42,6 +43,37 @@ class _MobileRemoteSession {
   final SessionID sessionId;
 }
 
+class _MobileConnectionRequest {
+  const _MobileConnectionRequest({required this.id, this.peer});
+
+  final String id;
+  final Peer? peer;
+}
+
+class _AddressBookPeerLabel extends StatelessWidget {
+  const _AddressBookPeerLabel({required this.peer});
+
+  final Peer peer;
+
+  @override
+  Widget build(BuildContext context) {
+    final name = _MobileConnectionTabPageState._addressBookPeerName(peer);
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(name, overflow: TextOverflow.ellipsis),
+        if (name != peer.id)
+          Text(
+            peer.id,
+            overflow: TextOverflow.ellipsis,
+            style: Theme.of(context).textTheme.bodySmall,
+          ),
+      ],
+    );
+  }
+}
+
 class _MobileConnectionTabPageState extends State<MobileConnectionTabPage> {
   final List<_MobileRemoteSession> _sessions = [];
   int _selectedIndex = 0;
@@ -65,34 +97,115 @@ class _MobileConnectionTabPageState extends State<MobileConnectionTabPage> {
     }
 
     final controller = TextEditingController();
-    final id = await showDialog<String>(
+    final peers = _addressBookPeers();
+    final request = await showDialog<_MobileConnectionRequest>(
       context: context,
-      builder: (dialogContext) => AlertDialog(
-        title: Text(translate('New connection')),
-        content: TextField(
-          controller: controller,
-          autofocus: true,
-          keyboardType: TextInputType.text,
-          decoration: InputDecoration(
-            hintText: translate('ID Server'),
-          ),
-          onSubmitted: (value) => Navigator.of(dialogContext).pop(value),
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.of(dialogContext).pop(),
-            child: Text(translate('Cancel')),
-          ),
-          TextButton(
-            onPressed: () => Navigator.of(dialogContext).pop(controller.text),
-            child: Text(translate('Connect')),
-          ),
-        ],
-      ),
+      builder: (dialogContext) {
+        String? selectedId;
+        var enteringIdManually = peers.isEmpty;
+
+        return StatefulBuilder(
+          builder: (context, setDialogState) {
+            final canConnect = enteringIdManually
+                ? controller.text.trim().isNotEmpty
+                : selectedId != null;
+            final selectedPeer = selectedId == null
+                ? null
+                : peers.firstWhere((peer) => peer.id == selectedId);
+
+            void connect() {
+              final id = enteringIdManually ? controller.text : selectedId;
+              if (id == null || id.trim().isEmpty) return;
+              Navigator.of(dialogContext).pop(_MobileConnectionRequest(
+                id: id,
+                peer: enteringIdManually ? null : selectedPeer,
+              ));
+            }
+
+            return AlertDialog(
+              title: Text(translate('New connection')),
+              content: ConstrainedBox(
+                constraints: const BoxConstraints(maxWidth: 360),
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: [
+                    if (peers.isNotEmpty && !enteringIdManually)
+                      DropdownButtonFormField<String>(
+                        value: selectedId,
+                        isExpanded: true,
+                        decoration: InputDecoration(
+                          labelText: translate('Address book'),
+                          hintText: translate('Select a saved device'),
+                        ),
+                        items: [
+                          for (final peer in peers)
+                            DropdownMenuItem(
+                              value: peer.id,
+                              child: _AddressBookPeerLabel(peer: peer),
+                            ),
+                        ],
+                        onChanged: (id) {
+                          setDialogState(() => selectedId = id);
+                        },
+                      )
+                    else
+                      TextField(
+                        controller: controller,
+                        autofocus: true,
+                        keyboardType: TextInputType.text,
+                        decoration: InputDecoration(
+                          hintText: translate('ID Server'),
+                        ),
+                        onChanged: (_) => setDialogState(() {}),
+                        onSubmitted: (_) => connect(),
+                      ),
+                    if (peers.isEmpty)
+                      Padding(
+                        padding: const EdgeInsets.only(top: 12),
+                        child: Text(
+                          translate('No saved devices in your address book.'),
+                          style: Theme.of(context).textTheme.bodySmall,
+                        ),
+                      ),
+                    if (peers.isNotEmpty)
+                      Align(
+                        alignment: Alignment.centerLeft,
+                        child: TextButton.icon(
+                          onPressed: () {
+                            setDialogState(() {
+                              enteringIdManually = !enteringIdManually;
+                            });
+                          },
+                          icon: Icon(enteringIdManually
+                              ? Icons.contacts_outlined
+                              : Icons.keyboard_outlined),
+                          label: Text(translate(enteringIdManually
+                              ? 'Choose from address book'
+                              : 'Enter ID manually')),
+                        ),
+                      ),
+                  ],
+                ),
+              ),
+              actions: [
+                TextButton(
+                  onPressed: () => Navigator.of(dialogContext).pop(),
+                  child: Text(translate('Cancel')),
+                ),
+                TextButton(
+                  onPressed: canConnect ? connect : null,
+                  child: Text(translate('Connect')),
+                ),
+              ],
+            );
+          },
+        );
+      },
     );
     controller.dispose();
 
-    final candidateId = id?.replaceAll(' ', '');
+    final candidateId = request?.id.replaceAll(' ', '');
     if (candidateId == null || candidateId.isEmpty || !mounted) return;
     final forceRelay = candidateId.endsWith('/r');
     final normalizedId = forceRelay
@@ -109,10 +222,37 @@ class _MobileConnectionTabPageState extends State<MobileConnectionTabPage> {
     setState(() {
       _sessions.add(_MobileRemoteSession(
         id: normalizedId,
-        forceRelay: forceRelay,
+        password: request?.peer?.password.isNotEmpty == true
+            ? request?.peer?.password
+            : null,
+        isSharedPassword: request?.peer?.password.isNotEmpty == true,
+        forceRelay: forceRelay || (request?.peer?.forceAlwaysRelay ?? false),
       ));
       _selectedIndex = _sessions.length - 1;
     });
+  }
+
+  List<Peer> _addressBookPeers() {
+    final peersById = <String, Peer>{};
+    for (final peer in gFFI.abModel.allPeers()) {
+      if (peer.id.isEmpty) continue;
+      final existing = peersById[peer.id];
+      if (existing == null ||
+          (existing.alias.isEmpty && peer.alias.isNotEmpty)) {
+        peersById[peer.id] = peer;
+      }
+    }
+    final peers = peersById.values.toList();
+    peers.sort((left, right) =>
+        _addressBookPeerName(left).compareTo(_addressBookPeerName(right)));
+    return peers;
+  }
+
+  static String _addressBookPeerName(Peer peer) {
+    if (peer.alias.isNotEmpty) return peer.alias;
+    if (peer.hostname.isNotEmpty) return peer.hostname;
+    if (peer.username.isNotEmpty) return peer.username;
+    return peer.id;
   }
 
   void _closeSession(SessionID sessionId) {
