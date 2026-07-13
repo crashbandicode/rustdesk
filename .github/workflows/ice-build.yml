@@ -31,6 +31,7 @@ env:
   # compiled client version and the release tag so installed clients can tell
   # exactly which signed fork build is newer.
   RELEASE_VERSION: "1.4.9-${{ github.run_number }}"
+  RUSTDESK_RELEASE_VERSION: "1.4.9-${{ github.run_number }}"
   RUSTDESK_BUILD_FORK: "crashbandicode/rustdesk ICE fork (UNOFFICIAL)"
   RUSTDESK_BUILD_COMMIT: ${{ github.sha }}
 
@@ -167,20 +168,6 @@ jobs:
         with:
           name: bridge-artifact
           path: ./
-
-      - name: Stamp release version
-        shell: pwsh
-        run: |
-          # hbb_common::gen_version generates src/version.rs from Cargo.toml
-          # during the Rust build, so stamp the tracked source of truth.
-          $versionFile = 'Cargo.toml'
-          $content = Get-Content -Raw $versionFile
-          $content = $content -replace '(?m)^version = ".*"$', 'version = "${{ env.RELEASE_VERSION }}"'
-          [System.IO.File]::WriteAllText(
-            $versionFile,
-            $content,
-            [System.Text.UTF8Encoding]::new($false)
-          )
 
       - name: Install LLVM and Clang
         uses: KyleMayes/install-llvm-action@ebc0426251bc40c7cd31162802432c68818ab8f0 # v2.0.9
@@ -346,27 +333,6 @@ jobs:
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           submodules: recursive
-
-      - name: Stamp release version
-        shell: bash
-        run: |
-          python3 - <<'PY'
-          import os
-          import re
-          from pathlib import Path
-
-          path = Path("Cargo.toml")
-          text = path.read_text()
-          text, count = re.subn(
-              r'^version = ".*"$',
-              f'version = "{os.environ["RELEASE_VERSION"]}"',
-              text,
-              flags=re.MULTILINE,
-          )
-          if count != 1:
-              raise SystemExit("Could not stamp Cargo.toml")
-          path.write_text(text)
-          PY
 
       - name: Patch RustDesk sources for Flutter 3.44
         shell: bash
