@@ -50,14 +50,264 @@ class _MobileConnectionRequest {
   final Peer? peer;
 }
 
-class _AddressBookPeerLabel extends StatelessWidget {
-  const _AddressBookPeerLabel({required this.peer});
+enum _MobileConnectionPickerSource { addressBook, recent, manual }
+
+String _peerDisplayName(Peer peer) {
+  if (peer.alias.isNotEmpty) return peer.alias;
+  if (peer.hostname.isNotEmpty) return peer.hostname;
+  if (peer.username.isNotEmpty) return peer.username;
+  return peer.id;
+}
+
+List<Peer> _deduplicatePeers(Iterable<Peer> source, {bool sort = false}) {
+  final peersById = <String, Peer>{};
+  for (final peer in source) {
+    if (peer.id.isEmpty) continue;
+    final existing = peersById[peer.id];
+    if (existing == null ||
+        (existing.alias.isEmpty && peer.alias.isNotEmpty)) {
+      peersById[peer.id] = peer;
+    }
+  }
+  final peers = peersById.values.toList();
+  if (sort) {
+    peers.sort((left, right) =>
+        _peerDisplayName(left).compareTo(_peerDisplayName(right)));
+  }
+  return peers;
+}
+
+class _ConnectionSourceDialog extends StatelessWidget {
+  const _ConnectionSourceDialog();
+
+  @override
+  Widget build(BuildContext context) {
+    void choose(_MobileConnectionPickerSource source) {
+      Navigator.of(context).pop(source);
+    }
+
+    return AlertDialog(
+      title: Text(translate('New connection')),
+      content: ConstrainedBox(
+        constraints: const BoxConstraints(maxWidth: 360),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            OutlinedButton.icon(
+              onPressed: () =>
+                  choose(_MobileConnectionPickerSource.addressBook),
+              icon: const Icon(Icons.menu_book_outlined),
+              label: Text(translate('Address book')),
+            ),
+            const SizedBox(height: 12),
+            OutlinedButton.icon(
+              onPressed: () => choose(_MobileConnectionPickerSource.recent),
+              icon: const Icon(Icons.history),
+              label: Text(translate('Recent')),
+            ),
+            const SizedBox(height: 8),
+            TextButton.icon(
+              onPressed: () => choose(_MobileConnectionPickerSource.manual),
+              icon: const Icon(Icons.keyboard_outlined),
+              label: Text(translate('Enter ID manually')),
+            ),
+          ],
+        ),
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.of(context).pop(),
+          child: Text(translate('Cancel')),
+        ),
+      ],
+    );
+  }
+}
+
+class _MobileConnectionPickerDialog extends StatefulWidget {
+  const _MobileConnectionPickerDialog({required this.source});
+
+  final _MobileConnectionPickerSource source;
+
+  @override
+  State<_MobileConnectionPickerDialog> createState() =>
+      _MobileConnectionPickerDialogState();
+}
+
+class _MobileConnectionPickerDialogState
+    extends State<_MobileConnectionPickerDialog> {
+  final _controller = TextEditingController();
+  String? _selectedId;
+  late bool _enteringIdManually;
+
+  @override
+  void initState() {
+    super.initState();
+    _enteringIdManually =
+        widget.source == _MobileConnectionPickerSource.manual;
+    if (widget.source == _MobileConnectionPickerSource.recent) {
+      gFFI.recentPeersModel.addListener(_refreshRecentPeers);
+      bind.mainLoadRecentPeers();
+    }
+  }
+
+  @override
+  void dispose() {
+    if (widget.source == _MobileConnectionPickerSource.recent) {
+      gFFI.recentPeersModel.removeListener(_refreshRecentPeers);
+    }
+    _controller.dispose();
+    super.dispose();
+  }
+
+  void _refreshRecentPeers() {
+    if (mounted) setState(() {});
+  }
+
+  List<Peer> get _peers {
+    switch (widget.source) {
+      case _MobileConnectionPickerSource.addressBook:
+        return _deduplicatePeers(gFFI.abModel.allPeers(), sort: true);
+      case _MobileConnectionPickerSource.recent:
+        final model = gFFI.recentPeersModel;
+        return _deduplicatePeers([
+          ...model.peers,
+          for (final id in model.restPeerIds) Peer.fromJson({'id': id}),
+        ]);
+      case _MobileConnectionPickerSource.manual:
+        return const [];
+    }
+  }
+
+  String get _sourceLabel {
+    switch (widget.source) {
+      case _MobileConnectionPickerSource.addressBook:
+        return translate('Address book');
+      case _MobileConnectionPickerSource.recent:
+        return translate('Recent');
+      case _MobileConnectionPickerSource.manual:
+        return translate('New connection');
+    }
+  }
+
+  String get _emptyMessage =>
+      widget.source == _MobileConnectionPickerSource.recent
+          ? translate('No recent connections.')
+          : translate('No saved devices in your address book.');
+
+  Peer? _selectedPeer(List<Peer> peers) {
+    for (final peer in peers) {
+      if (peer.id == _selectedId) return peer;
+    }
+    return null;
+  }
+
+  void _connect(List<Peer> peers) {
+    final peer = _selectedPeer(peers);
+    final id = _enteringIdManually ? _controller.text : peer?.id;
+    if (id == null || id.trim().isEmpty) return;
+    Navigator.of(context).pop(_MobileConnectionRequest(
+      id: id,
+      peer: _enteringIdManually ? null : peer,
+    ));
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final peers = _peers;
+    final selectedPeer = _selectedPeer(peers);
+    final showManualField = _enteringIdManually || peers.isEmpty;
+    final canConnect = showManualField
+        ? _controller.text.trim().isNotEmpty
+        : selectedPeer != null;
+
+    return AlertDialog(
+      title: Text(_sourceLabel),
+      content: ConstrainedBox(
+        constraints: const BoxConstraints(maxWidth: 360),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            if (showManualField)
+              TextField(
+                controller: _controller,
+                autofocus: true,
+                keyboardType: TextInputType.text,
+                decoration: InputDecoration(hintText: translate('ID Server')),
+                onChanged: (_) => setState(() {}),
+                onSubmitted: (_) => _connect(peers),
+              )
+            else
+              DropdownButtonFormField<String>(
+                value: selectedPeer?.id,
+                isExpanded: true,
+                decoration: InputDecoration(
+                  labelText: _sourceLabel,
+                  hintText: translate('Select a saved device'),
+                ),
+                items: [
+                  for (final peer in peers)
+                    DropdownMenuItem(
+                      value: peer.id,
+                      child: _ConnectionPeerLabel(peer: peer),
+                    ),
+                ],
+                onChanged: (id) => setState(() => _selectedId = id),
+              ),
+            if (peers.isEmpty &&
+                widget.source != _MobileConnectionPickerSource.manual)
+              Padding(
+                padding: const EdgeInsets.only(top: 12),
+                child: Text(
+                  _emptyMessage,
+                  style: Theme.of(context).textTheme.bodySmall,
+                ),
+              ),
+            if (peers.isNotEmpty &&
+                widget.source != _MobileConnectionPickerSource.manual)
+              Align(
+                alignment: Alignment.centerLeft,
+                child: TextButton.icon(
+                  onPressed: () {
+                    setState(() {
+                      _enteringIdManually = !_enteringIdManually;
+                    });
+                  },
+                  icon: Icon(_enteringIdManually
+                      ? Icons.arrow_back_outlined
+                      : Icons.keyboard_outlined),
+                  label: Text(_enteringIdManually
+                      ? _sourceLabel
+                      : translate('Enter ID manually')),
+                ),
+              ),
+          ],
+        ),
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.of(context).pop(),
+          child: Text(translate('Cancel')),
+        ),
+        TextButton(
+          onPressed: canConnect ? () => _connect(peers) : null,
+          child: Text(translate('Connect')),
+        ),
+      ],
+    );
+  }
+}
+
+class _ConnectionPeerLabel extends StatelessWidget {
+  const _ConnectionPeerLabel({required this.peer});
 
   final Peer peer;
 
   @override
   Widget build(BuildContext context) {
-    final name = _MobileConnectionTabPageState._addressBookPeerName(peer);
+    final name = _peerDisplayName(peer);
     return Column(
       mainAxisSize: MainAxisSize.min,
       crossAxisAlignment: CrossAxisAlignment.start,
@@ -96,114 +346,16 @@ class _MobileConnectionTabPageState extends State<MobileConnectionTabPage> {
       return;
     }
 
-    final controller = TextEditingController();
-    final peers = _addressBookPeers();
+    final source = await showDialog<_MobileConnectionPickerSource>(
+      context: context,
+      builder: (_) => const _ConnectionSourceDialog(),
+    );
+    if (source == null || !mounted) return;
+
     final request = await showDialog<_MobileConnectionRequest>(
       context: context,
-      builder: (dialogContext) {
-        String? selectedId;
-        var enteringIdManually = peers.isEmpty;
-
-        return StatefulBuilder(
-          builder: (context, setDialogState) {
-            final canConnect = enteringIdManually
-                ? controller.text.trim().isNotEmpty
-                : selectedId != null;
-            final selectedPeer = selectedId == null
-                ? null
-                : peers.firstWhere((peer) => peer.id == selectedId);
-
-            void connect() {
-              final id = enteringIdManually ? controller.text : selectedId;
-              if (id == null || id.trim().isEmpty) return;
-              Navigator.of(dialogContext).pop(_MobileConnectionRequest(
-                id: id,
-                peer: enteringIdManually ? null : selectedPeer,
-              ));
-            }
-
-            return AlertDialog(
-              title: Text(translate('New connection')),
-              content: ConstrainedBox(
-                constraints: const BoxConstraints(maxWidth: 360),
-                child: Column(
-                  mainAxisSize: MainAxisSize.min,
-                  crossAxisAlignment: CrossAxisAlignment.stretch,
-                  children: [
-                    if (peers.isNotEmpty && !enteringIdManually)
-                      DropdownButtonFormField<String>(
-                        value: selectedId,
-                        isExpanded: true,
-                        decoration: InputDecoration(
-                          labelText: translate('Address book'),
-                          hintText: translate('Select a saved device'),
-                        ),
-                        items: [
-                          for (final peer in peers)
-                            DropdownMenuItem(
-                              value: peer.id,
-                              child: _AddressBookPeerLabel(peer: peer),
-                            ),
-                        ],
-                        onChanged: (id) {
-                          setDialogState(() => selectedId = id);
-                        },
-                      )
-                    else
-                      TextField(
-                        controller: controller,
-                        autofocus: true,
-                        keyboardType: TextInputType.text,
-                        decoration: InputDecoration(
-                          hintText: translate('ID Server'),
-                        ),
-                        onChanged: (_) => setDialogState(() {}),
-                        onSubmitted: (_) => connect(),
-                      ),
-                    if (peers.isEmpty)
-                      Padding(
-                        padding: const EdgeInsets.only(top: 12),
-                        child: Text(
-                          translate('No saved devices in your address book.'),
-                          style: Theme.of(context).textTheme.bodySmall,
-                        ),
-                      ),
-                    if (peers.isNotEmpty)
-                      Align(
-                        alignment: Alignment.centerLeft,
-                        child: TextButton.icon(
-                          onPressed: () {
-                            setDialogState(() {
-                              enteringIdManually = !enteringIdManually;
-                            });
-                          },
-                          icon: Icon(enteringIdManually
-                              ? Icons.contacts_outlined
-                              : Icons.keyboard_outlined),
-                          label: Text(translate(enteringIdManually
-                              ? 'Choose from address book'
-                              : 'Enter ID manually')),
-                        ),
-                      ),
-                  ],
-                ),
-              ),
-              actions: [
-                TextButton(
-                  onPressed: () => Navigator.of(dialogContext).pop(),
-                  child: Text(translate('Cancel')),
-                ),
-                TextButton(
-                  onPressed: canConnect ? connect : null,
-                  child: Text(translate('Connect')),
-                ),
-              ],
-            );
-          },
-        );
-      },
+      builder: (_) => _MobileConnectionPickerDialog(source: source),
     );
-    controller.dispose();
 
     final candidateId = request?.id.replaceAll(' ', '');
     if (candidateId == null || candidateId.isEmpty || !mounted) return;
@@ -230,29 +382,6 @@ class _MobileConnectionTabPageState extends State<MobileConnectionTabPage> {
       ));
       _selectedIndex = _sessions.length - 1;
     });
-  }
-
-  List<Peer> _addressBookPeers() {
-    final peersById = <String, Peer>{};
-    for (final peer in gFFI.abModel.allPeers()) {
-      if (peer.id.isEmpty) continue;
-      final existing = peersById[peer.id];
-      if (existing == null ||
-          (existing.alias.isEmpty && peer.alias.isNotEmpty)) {
-        peersById[peer.id] = peer;
-      }
-    }
-    final peers = peersById.values.toList();
-    peers.sort((left, right) =>
-        _addressBookPeerName(left).compareTo(_addressBookPeerName(right)));
-    return peers;
-  }
-
-  static String _addressBookPeerName(Peer peer) {
-    if (peer.alias.isNotEmpty) return peer.alias;
-    if (peer.hostname.isNotEmpty) return peer.hostname;
-    if (peer.username.isNotEmpty) return peer.username;
-    return peer.id;
   }
 
   void _closeSession(SessionID sessionId) {
