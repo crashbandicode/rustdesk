@@ -176,7 +176,11 @@ jobs:
           $versionFile = 'Cargo.toml'
           $content = Get-Content -Raw $versionFile
           $content = $content -replace '(?m)^version = ".*"$', 'version = "${{ env.RELEASE_VERSION }}"'
-          Set-Content -NoNewline $versionFile $content
+          [System.IO.File]::WriteAllText(
+            $versionFile,
+            $content,
+            [System.Text.UTF8Encoding]::new($false)
+          )
 
       - name: Install LLVM and Clang
         uses: KyleMayes/install-llvm-action@ebc0426251bc40c7cd31162802432c68818ab8f0 # v2.0.9
