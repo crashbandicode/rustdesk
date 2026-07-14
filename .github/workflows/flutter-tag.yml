@@ -11,6 +11,11 @@ on:
 
 jobs:
   run-flutter-tag-build:
+    # Fork releases are built and published by ice-build.yml. Creating that
+    # release also creates a version tag, which must not recursively start the
+    # upstream all-platform release matrix. Keep manual dispatch available for
+    # deliberate full-matrix testing in forks.
+    if: github.repository == 'rustdesk/rustdesk' || github.event_name == 'workflow_dispatch'
     uses: ./.github/workflows/flutter-build.yml
     secrets: inherit
     with:
