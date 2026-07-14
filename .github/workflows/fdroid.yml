@@ -15,6 +15,11 @@ jobs:
   # X.Y.Z-A => X * 1e6 + Y * 1e4 + Z * 1e2 + A
   update-fdroid-version-file:
     name: Publish RustDesk version file for F-Droid updater
+    # Custom fork releases are not F-Droid upstream releases. Their version
+    # tags are created by ice-build.yml and should not mutate fdroid-version.
+    # Manual dispatch remains available when this workflow is intentionally
+    # exercised in a fork.
+    if: github.repository == 'rustdesk/rustdesk' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     steps:
       - name: Generate RustDesk version file
