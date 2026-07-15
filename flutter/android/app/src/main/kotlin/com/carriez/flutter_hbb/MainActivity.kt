@@ -10,6 +10,7 @@ package com.carriez.flutter_hbb
 import ffi.FFI
 
 import android.content.ComponentName
+import android.content.ClipData
 import android.content.Context
 import android.content.Intent
 import android.content.ServiceConnection
@@ -27,12 +28,14 @@ import android.media.MediaFormat
 import android.net.Uri
 import android.util.DisplayMetrics
 import androidx.annotation.RequiresApi
+import androidx.core.content.FileProvider
 import org.json.JSONArray
 import org.json.JSONObject
 import com.hjq.permissions.XXPermissions
 import io.flutter.embedding.android.FlutterActivity
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.MethodChannel
+import java.io.File
 import kotlin.concurrent.thread
 
 
@@ -188,6 +191,18 @@ class MainActivity : FlutterActivity() {
                         .distinct()
                     result.success(roots)
                 }
+                "get_diagnostic_directory" -> {
+                    val directory = diagnosticDirectory()
+                    if (!directory.exists() && !directory.mkdirs()) {
+                        result.error(
+                            "diagnostic-directory-failed",
+                            "Unable to create diagnostic directory",
+                            null
+                        )
+                    } else {
+                        result.success(directory.absolutePath)
+                    }
+                }
                 START_ACTION -> {
                     if (call.arguments is String) {
                         startAction(context, call.arguments as String)
@@ -277,6 +292,18 @@ class MainActivity : FlutterActivity() {
                         GitHubUpdateInstaller(this).downloadAndPrompt(url, result)
                     }
                 }
+                "share_diagnostic_bundle" -> {
+                    val bundlePath = call.arguments as? String
+                    if (bundlePath == null) {
+                        result.error(
+                            "invalid-diagnostic-path",
+                            "Missing diagnostic bundle path",
+                            null
+                        )
+                    } else {
+                        shareDiagnosticBundle(bundlePath, result)
+                    }
+                }
                 GET_START_ON_BOOT_OPT -> {
                     val prefs = getSharedPreferences(KEY_SHARED_PREFERENCES, MODE_PRIVATE)
                     result.success(prefs.getBoolean(KEY_START_ON_BOOT_OPT, false))
@@ -325,6 +352,56 @@ class MainActivity : FlutterActivity() {
                 }
             }
         }
+    }
+
+    private fun shareDiagnosticBundle(bundlePath: String, result: MethodChannel.Result) {
+        try {
+            val bundle = File(bundlePath).canonicalFile
+            val allowedRoots = listOfNotNull(
+                getExternalFilesDir(null)?.let { File(it, "diagnostics").canonicalFile },
+                File(cacheDir, "diagnostics").canonicalFile
+            )
+            val allowed = allowedRoots.any { root ->
+                bundle.path.startsWith(root.path + File.separator)
+            }
+            if (!allowed || !bundle.isFile || !bundle.name.endsWith(".zip", ignoreCase = true)) {
+                result.error(
+                    "invalid-diagnostic-path",
+                    "Diagnostic bundle is outside the approved directory",
+                    null
+                )
+                return
+            }
+            if (bundle.length() <= 0 || bundle.length() > 100L * 1024 * 1024) {
+                result.error(
+                    "invalid-diagnostic-size",
+                    "Diagnostic bundle has an invalid size",
+                    null
+                )
+                return
+            }
+
+            val uri = FileProvider.getUriForFile(
+                this,
+                "$packageName.fileprovider",
+                bundle
+            )
+            val share = Intent(Intent.ACTION_SEND)
+                .setType("application/zip")
+                .putExtra(Intent.EXTRA_STREAM, uri)
+                .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            share.clipData = ClipData.newRawUri("RustDesk diagnostics", uri)
+            startActivity(Intent.createChooser(share, "Share RustDesk diagnostics"))
+            result.success(true)
+        } catch (error: Exception) {
+            Log.e(logTag, "Unable to share diagnostic bundle", error)
+            result.error("diagnostic-share-failed", error.message, null)
+        }
+    }
+
+    private fun diagnosticDirectory(): File {
+        val base = getExternalFilesDir(null) ?: cacheDir
+        return File(base, "diagnostics")
     }
 
     private fun readImagePayload(

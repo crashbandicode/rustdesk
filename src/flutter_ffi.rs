@@ -1145,6 +1145,48 @@ pub fn main_get_build_identity_sync() -> SyncReturn<String> {
     SyncReturn(format!("{fork} · commit {short_commit}"))
 }
 
+/// Return the native log directory used by the current process.
+pub fn main_get_log_path_sync() -> SyncReturn<String> {
+    SyncReturn(crate::diagnostics::log_path())
+}
+
+/// Append a bounded structured event when support diagnostics are enabled.
+pub fn main_write_diagnostic_event(event: String, fields_json: String) -> bool {
+    crate::diagnostics::write_event(&event, &fields_json).unwrap_or_else(|error| {
+        log::warn!("Failed to write diagnostic event {event}: {error}");
+        false
+    })
+}
+
+/// Create a bounded ZIP containing recent logs and non-secret build metadata.
+/// Returns a JSON result so platform UI can surface errors without panicking FFI.
+pub fn main_export_diagnostic_bundle(
+    destination: String,
+    capture_started_millis: i64,
+    metadata_json: String,
+) -> String {
+    let capture_started_millis = capture_started_millis.max(0) as u64;
+    match crate::diagnostics::export_bundle(
+        &PathBuf::from(destination),
+        capture_started_millis,
+        &metadata_json,
+    ) {
+        Ok(summary) => serde_json::to_string(&serde_json::json!({
+            "ok": true,
+            "path": summary.path,
+            "file_count": summary.file_count,
+            "included_uncompressed_bytes": summary.included_uncompressed_bytes,
+            "omitted_file_count": summary.omitted_file_count,
+        }))
+        .unwrap_or_else(|_| "{\"ok\":false,\"error\":\"Serialization failed\"}".to_owned()),
+        Err(error) => serde_json::to_string(&serde_json::json!({
+            "ok": false,
+            "error": error.to_string(),
+        }))
+        .unwrap_or_else(|_| "{\"ok\":false,\"error\":\"Export failed\"}".to_owned()),
+    }
+}
+
 pub fn main_get_fav() -> Vec<String> {
     get_fav()
 }
@@ -3069,8 +3111,7 @@ pub fn main_set_common(_key: String, _value: String) {
 
 pub fn session_set_common(session_id: SessionID, key: String, value: String) {
     if let Some(s) = sessions::get_session_by_session_id(&session_id) {
-        if key == "continue-insecure-connection"
-        {
+        if key == "continue-insecure-connection" {
             s.continue_insecure_connection(value == "Y");
             return;
         }
