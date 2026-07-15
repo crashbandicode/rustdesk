@@ -15,6 +15,7 @@ import '../../common.dart';
 import '../../common/widgets/dialog.dart';
 import '../../common/widgets/login.dart';
 import '../../consts.dart';
+import '../../diagnostics.dart';
 import '../../models/model.dart';
 import '../../models/platform_model.dart';
 import '../widgets/deploy_dialog.dart';
@@ -102,6 +103,7 @@ class _SettingsState extends State<SettingsPage> with WidgetsBindingObserver {
   var _isUsingPublicServer = false;
   var _allowAskForNoteAtEndOfConnection = false;
   var _preventSleepWhileConnected = true;
+  var _diagnosticMode = false;
 
   _SettingsState() {
     _enableAbr = option2bool(
@@ -146,6 +148,7 @@ class _SettingsState extends State<SettingsPage> with WidgetsBindingObserver {
         mainGetLocalBoolOptionSync(kOptionKeepAwakeDuringOutgoingSessions);
     _showTerminalExtraKeys =
         mainGetLocalBoolOptionSync(kOptionEnableShowTerminalExtraKeys);
+    _diagnosticMode = DiagnosticSupport.enabled;
   }
 
   @override
@@ -950,6 +953,43 @@ class _SettingsState extends State<SettingsPage> with WidgetsBindingObserver {
             title: Text(translate("Enhancements")),
             tiles: enhancementsTiles,
           ),
+        SettingsSection(
+          title: Text(translate('Diagnostics')),
+          tiles: [
+            SettingsTile.switchTile(
+              title: Text(translate('Diagnostic mode')),
+              description: Text(translate(
+                  'Capture detailed connection events from now until you reproduce the bug. Logs may contain peer IDs, hostnames, IP addresses, and local paths.')),
+              initialValue: _diagnosticMode,
+              onToggle: (value) async {
+                await DiagnosticSupport.setEnabled(value);
+                if (!mounted) return;
+                setState(() => _diagnosticMode = value);
+                showToast(translate(value
+                    ? 'Diagnostic capture started'
+                    : 'Diagnostic capture stopped'));
+              },
+            ),
+            SettingsTile(
+              title: Text(translate('Export diagnostic bundle')),
+              description: Text(translate(
+                  'Create a bounded ZIP of recent logs and open the system share sheet. Configuration files, recordings, and clipboard payloads are not added; review log text before sharing.')),
+              leading: const Icon(Icons.bug_report_outlined),
+              onPressed: (context) async {
+                showToast(translate('Creating diagnostic bundle...'));
+                try {
+                  final result = await DiagnosticSupport.exportBundle();
+                  if (result == null) return;
+                  showToast(translate(result.shared
+                      ? 'Diagnostic bundle ready to share'
+                      : 'Diagnostic bundle created'));
+                } catch (error) {
+                  showToast('${translate('Diagnostic export failed')}: $error');
+                }
+              },
+            ),
+          ],
+        ),
         SettingsSection(
           title: Text(translate("About")),
           tiles: [
