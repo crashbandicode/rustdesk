@@ -444,7 +444,13 @@ class _MobileConnectionTabPageState extends State<MobileConnectionTabPage> {
       color: MyTheme.canvasColor,
       child: Column(
         children: [
-          _buildTabStrip(),
+          ColoredBox(
+            color: MyTheme.accent,
+            child: SafeArea(
+              bottom: false,
+              child: _buildTabStrip(),
+            ),
+          ),
           Expanded(
             child: IndexedStack(
               index: _selectedIndex,
