@@ -12,6 +12,7 @@ import 'package:flutter_hbb/consts.dart';
 import 'package:flutter_hbb/desktop/pages/desktop_home_page.dart';
 import 'package:flutter_hbb/desktop/pages/desktop_tab_page.dart';
 import 'package:flutter_hbb/desktop/widgets/remote_toolbar.dart';
+import 'package:flutter_hbb/diagnostics.dart';
 import 'package:flutter_hbb/mobile/widgets/dialog.dart';
 import 'package:flutter_hbb/models/platform_model.dart';
 import 'package:flutter_hbb/models/printer_model.dart';
@@ -2407,6 +2408,9 @@ class _About extends StatefulWidget {
 }
 
 class _AboutState extends State<_About> {
+  bool _diagnosticMode = DiagnosticSupport.enabled;
+  bool _exportingDiagnostics = false;
+
   @override
   Widget build(BuildContext context) {
     return futureBuilder(future: () async {
@@ -2463,6 +2467,68 @@ class _AboutState extends State<_About> {
                     translate('Website'),
                     style: linkStyle,
                   ).marginSymmetric(vertical: 4.0)),
+              const Divider(height: 28),
+              Text(
+                translate('Diagnostics'),
+                style: const TextStyle(
+                  fontSize: 17,
+                  fontWeight: FontWeight.w600,
+                ),
+              ),
+              SwitchListTile(
+                contentPadding: EdgeInsets.zero,
+                title: Text(translate('Diagnostic mode')),
+                subtitle: Text(translate(
+                    'Capture detailed connection events from now until you reproduce the bug. Logs may contain peer IDs, hostnames, IP addresses, and local paths.')),
+                value: _diagnosticMode,
+                onChanged: (value) async {
+                  await DiagnosticSupport.setEnabled(value);
+                  if (!mounted) return;
+                  setState(() => _diagnosticMode = value);
+                  showToast(translate(value
+                      ? 'Diagnostic capture started'
+                      : 'Diagnostic capture stopped'));
+                },
+              ),
+              Row(
+                children: [
+                  ElevatedButton.icon(
+                    onPressed: _exportingDiagnostics
+                        ? null
+                        : () async {
+                            setState(() => _exportingDiagnostics = true);
+                            try {
+                              final result =
+                                  await DiagnosticSupport.exportBundle();
+                              if (result != null) {
+                                showToast(
+                                    '${translate('Diagnostic bundle created')}: ${result.path}');
+                              }
+                            } catch (error) {
+                              showToast(
+                                  '${translate('Diagnostic export failed')}: $error');
+                            } finally {
+                              if (mounted) {
+                                setState(() => _exportingDiagnostics = false);
+                              }
+                            }
+                          },
+                    icon: _exportingDiagnostics
+                        ? const SizedBox(
+                            width: 16,
+                            height: 16,
+                            child: CircularProgressIndicator(strokeWidth: 2),
+                          )
+                        : const Icon(Icons.bug_report_outlined),
+                    label: Text(translate('Export diagnostic bundle')),
+                  ),
+                ],
+              ).marginOnly(bottom: 4),
+              Text(
+                translate(
+                    'Creates a bounded ZIP of recent logs. Configuration files, recordings, and clipboard payloads are not added; review log text before sharing.'),
+                style: Theme.of(context).textTheme.bodySmall,
+              ).marginOnly(bottom: 12),
               Container(
                 decoration: const BoxDecoration(color: Color(0xFF2c8cff)),
                 padding:
