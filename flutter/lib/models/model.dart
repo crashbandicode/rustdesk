@@ -12,6 +12,7 @@ import 'package:flutter/services.dart';
 import 'package:flutter/scheduler.dart';
 import 'package:flutter_hbb/common/widgets/peers_view.dart';
 import 'package:flutter_hbb/consts.dart';
+import 'package:flutter_hbb/diagnostics.dart';
 import 'package:flutter_hbb/models/ab_model.dart';
 import 'package:flutter_hbb/models/chat_model.dart';
 import 'package:flutter_hbb/models/cm_file_model.dart';
@@ -354,6 +355,12 @@ class FfiModel with ChangeNotifier {
     return (evt) async {
       var name = evt['name'];
       if (name == 'msgbox') {
+        unawaited(DiagnosticSupport.event('connection_message', {
+          'session_id': sessionId.toString(),
+          'peer_id': peerId,
+          'type': evt['type']?.toString() ?? '',
+          'title': evt['title']?.toString() ?? '',
+        }));
         handleMsgBox(evt, sessionId, peerId);
       } else if (name == 'toast') {
         handleToast(evt, sessionId, peerId);
@@ -367,6 +374,13 @@ class FfiModel with ChangeNotifier {
         handlePlatformAdditions(evt, sessionId, peerId);
       } else if (name == 'connection_ready') {
         final direct = evt['direct'] == 'true';
+        unawaited(DiagnosticSupport.event('connection_ready', {
+          'session_id': sessionId.toString(),
+          'peer_id': peerId,
+          'direct': direct,
+          'secure': evt['secure'] == 'true',
+          'stream_type': evt['stream_type']?.toString() ?? '',
+        }));
         setConnectionType(
             peerId, evt['secure'] == 'true', direct, evt['stream_type'] ?? '');
         onConnectionReady();
@@ -1030,12 +1044,19 @@ class FfiModel with ChangeNotifier {
         min(_reconnects, kMaxTransientNetworkReconnectDelaySeconds);
     _reconnects =
         min(_reconnects * 2, kMaxTransientNetworkReconnectDelaySeconds);
+    final scheduledDelaySeconds = _mobileAppBackgrounded ? 2 : delaySeconds;
+    unawaited(DiagnosticSupport.event('mobile_reconnect_scheduled', {
+      'session_id': sessionId.toString(),
+      'peer_id': parent.target?.id ?? '',
+      'delay_seconds': scheduledDelaySeconds,
+      'backgrounded': _mobileAppBackgrounded,
+    }));
 
     dialogManager.dismissAll();
     dialogManager.showLoading(translate('Connecting...'),
         onCancel: _requestClose);
     _transientNetworkReconnectTimer = Timer(
-      Duration(seconds: _mobileAppBackgrounded ? 2 : delaySeconds),
+      Duration(seconds: scheduledDelaySeconds),
       () {
         _transientNetworkReconnectTimer = null;
         final target = parent.target;
@@ -1043,6 +1064,11 @@ class FfiModel with ChangeNotifier {
           resetTransientNetworkReconnectState();
           return;
         }
+        unawaited(DiagnosticSupport.event('mobile_reconnect_dispatched', {
+          'session_id': sessionId.toString(),
+          'peer_id': target.id,
+          'source': 'timer',
+        }));
         reconnect(dialogManager, sessionId, false);
       },
     );
@@ -1056,11 +1082,22 @@ class FfiModel with ChangeNotifier {
     _mobileAppBackgrounded = false;
     final target = parent.target;
     if (!_transientNetworkReconnectPending || target == null || target.closed) {
+      unawaited(DiagnosticSupport.event('mobile_resume_reconnect_skipped', {
+        'session_id': sessionId.toString(),
+        'peer_id': target?.id ?? '',
+        'pending': _transientNetworkReconnectPending,
+        'closed': target?.closed ?? true,
+      }));
       return;
     }
     _transientNetworkReconnectStartTime = DateTime.now();
     _transientNetworkReconnectTimer?.cancel();
     _transientNetworkReconnectTimer = null;
+    unawaited(DiagnosticSupport.event('mobile_reconnect_dispatched', {
+      'session_id': sessionId.toString(),
+      'peer_id': target.id,
+      'source': 'app_resumed',
+    }));
     reconnect(target.dialogManager, sessionId, false);
   }
 

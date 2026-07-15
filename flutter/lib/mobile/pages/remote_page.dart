@@ -6,6 +6,7 @@ import 'package:flutter/services.dart';
 import 'package:flutter_hbb/common/shared_state.dart';
 import 'package:flutter_hbb/common/widgets/toolbar.dart';
 import 'package:flutter_hbb/consts.dart';
+import 'package:flutter_hbb/diagnostics.dart';
 import 'package:flutter_hbb/mobile/widgets/floating_mouse.dart';
 import 'package:flutter_hbb/mobile/widgets/floating_mouse_widgets.dart';
 import 'package:flutter_hbb/mobile/widgets/gesture_help.dart';
@@ -118,6 +119,12 @@ class _RemotePageState extends State<RemotePage> with WidgetsBindingObserver {
   @override
   void initState() {
     super.initState();
+    unawaited(DiagnosticSupport.event('mobile_session_started', {
+      'session_id': widget.sessionId.toString(),
+      'peer_id': widget.id,
+      'force_relay': widget.forceRelay ?? false,
+      'active': widget.active,
+    }));
     _ffi = FFI(widget.sessionId);
     _ffi.onCloseRequested = widget.onCloseRequested;
     _ffi.chatModel.voiceCallStatus.value = VoiceCallStatus.notStarted;
@@ -144,6 +151,11 @@ class _RemotePageState extends State<RemotePage> with WidgetsBindingObserver {
         .changeCurrentKey(MessageKey(widget.id, ChatModel.clientModeID));
     _blockableOverlayState.applyFfi(_ffi);
     _ffi.imageModel.addCallbackOnFirstImage((String peerId) {
+      unawaited(DiagnosticSupport.event('mobile_first_image', {
+        'session_id': widget.sessionId.toString(),
+        'peer_id': peerId,
+        'active': widget.active,
+      }));
       _ffi.recordingModel
           .updateStatus(bind.sessionGetIsRecording(sessionId: _ffi.sessionId));
       if (_ffi.recordingModel.start) {
@@ -174,6 +186,11 @@ class _RemotePageState extends State<RemotePage> with WidgetsBindingObserver {
   void didUpdateWidget(covariant RemotePage oldWidget) {
     super.didUpdateWidget(oldWidget);
     if (oldWidget.active == widget.active) return;
+    unawaited(DiagnosticSupport.event('mobile_tab_active_changed', {
+      'session_id': widget.sessionId.toString(),
+      'peer_id': widget.id,
+      'active': widget.active,
+    }));
     if (widget.active) {
       _physicalFocusNode.requestFocus();
       return;
@@ -184,6 +201,11 @@ class _RemotePageState extends State<RemotePage> with WidgetsBindingObserver {
 
   @override
   Future<void> dispose() async {
+    unawaited(DiagnosticSupport.event('mobile_session_disposed', {
+      'session_id': widget.sessionId.toString(),
+      'peer_id': widget.id,
+      'active': widget.active,
+    }));
     WidgetsBinding.instance.removeObserver(this);
     // Close the session up-front. `_ffi.close()` below only calls `sessionClose`
     // after several awaits (canvas save, image update, the `enable_soft_keyboard`
@@ -224,6 +246,12 @@ class _RemotePageState extends State<RemotePage> with WidgetsBindingObserver {
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
+    unawaited(DiagnosticSupport.event('mobile_lifecycle_changed', {
+      'session_id': widget.sessionId.toString(),
+      'peer_id': widget.id,
+      'state': state.name,
+      'active': widget.active,
+    }));
     if (state == AppLifecycleState.resumed) {
       if (widget.active) {
         trySyncClipboard();
