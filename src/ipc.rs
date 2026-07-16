@@ -923,6 +923,8 @@ async fn handle(data: Data, stream: &mut Connection) {
                     crate::privacy_mode::switch(v);
                 }
                 Config::set_options(value);
+                #[cfg(windows)]
+                crate::server::synergy_service::option_changed();
                 allow_err!(stream.send(&Data::Options(None)).await);
             }
         },
