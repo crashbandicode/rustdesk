@@ -144,6 +144,8 @@ const String kOptionTouchMode = "touch-mode";
 const String kOptionMouseStartPosition = "mouse-start-position";
 const String kOptionDiagnosticMode = "diagnostic-mode";
 const String kOptionDiagnosticStartedAt = "diagnostic-started-at";
+const String kOptionPauseSynergyOnIncomingSessions =
+    "pause-synergy-on-incoming-sessions";
 const String kOptionI444 = "i444";
 const String kOptionSwapLeftRightMouse = "swap-left-right-mouse";
 const String kOptionCodecPreference = "codec-preference";

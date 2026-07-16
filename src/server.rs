@@ -71,6 +71,8 @@ mod login_failure_check;
 pub mod display_service;
 #[cfg(windows)]
 pub mod portable_service;
+#[cfg(windows)]
+pub(crate) mod synergy_service;
 mod service;
 mod video_qos;
 pub mod video_service;
@@ -588,6 +590,8 @@ pub async fn start_server(is_server: bool, no_server: bool) {
 
     if is_server {
         crate::common::set_server_running(true);
+        #[cfg(windows)]
+        synergy_service::initialize();
         std::thread::spawn(move || {
             if let Err(err) = crate::ipc::start("") {
                 log::error!("Failed to start ipc: {}", err);

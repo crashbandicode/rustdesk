@@ -1070,6 +1070,8 @@ impl Connection {
                     #[cfg(windows)]
                     conn.portable_check();
                     raii::AuthedConnID::check_wake_lock_on_setting_changed();
+                    #[cfg(windows)]
+                    raii::AuthedConnID::reconcile_synergy();
                     if let Some((instant, minute)) = conn.auto_disconnect_timer.as_ref() {
                         if instant.elapsed().as_secs() > minute * 60 {
                             conn.send_close_reason_no_retry("Connection failed due to inactivity").await;
@@ -6496,6 +6498,8 @@ mod raii {
                 printer,
             });
             Self::check_wake_lock();
+            #[cfg(windows)]
+            Self::notify_synergy();
             use std::sync::Once;
             static _ONCE: Once = Once::new();
             _ONCE.call_once(|| {
@@ -6531,6 +6535,29 @@ mod raii {
             if cached != Some(current) {
                 Self::check_wake_lock();
             }
+        }
+
+        #[cfg(windows)]
+        fn remote_conn_count() -> usize {
+            AUTHED_CONNS
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|c| c.conn_type == AuthConnType::Remote)
+                .count()
+        }
+
+        #[cfg(windows)]
+        pub fn reconcile_synergy() {
+            let count = Self::remote_conn_count();
+            if count > 0 {
+                super::synergy_service::remote_count_changed(count);
+            }
+        }
+
+        #[cfg(windows)]
+        fn notify_synergy() {
+            super::synergy_service::remote_count_changed(Self::remote_conn_count());
         }
 
         #[cfg(windows)]
@@ -6652,6 +6679,8 @@ mod raii {
                 scrap::wayland::pipewire::try_close_session();
             }
             Self::check_wake_lock();
+            #[cfg(windows)]
+            Self::notify_synergy();
             #[cfg(not(any(target_os = "android", target_os = "ios")))]
             {
                 use crate::whiteboard;
