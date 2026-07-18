@@ -10,6 +10,24 @@ MobileSessionLifecycleTarget _target(String id, List<String> events) {
 }
 
 void main() {
+  test('closing one tab requests only its native session once', () {
+    final closed = <String>[];
+    final coordinator = MobileSessionCloseCoordinator<String>(
+      onCloseRequested: closed.add,
+    );
+
+    expect(coordinator.request('yoga-session'), isTrue);
+    expect(coordinator.wasRequested('yoga-session'), isTrue);
+    expect(coordinator.wasRequested('butterbridge-session'), isFalse);
+    expect(closed, ['yoga-session']);
+
+    expect(coordinator.request('yoga-session'), isFalse);
+    expect(closed, ['yoga-session']);
+
+    expect(coordinator.request('butterbridge-session'), isTrue);
+    expect(closed, ['yoga-session', 'butterbridge-session']);
+  });
+
   testWidgets('selected tab resumes first and live siblings are staggered', (
     tester,
   ) async {

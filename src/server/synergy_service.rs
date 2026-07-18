@@ -1,12 +1,16 @@
 use hbb_common::{
     anyhow::{bail, Context},
     config::Config,
-    log, ResultType,
+    log,
+    sysinfo::System,
+    ResultType,
 };
 use std::{
     ffi::OsStr,
-    fs::{self, File},
-    io::{ErrorKind, Write},
+    fs::{self, File, OpenOptions},
+    io::{BufRead, BufReader, ErrorKind, Read, Write},
+    net::{Ipv4Addr, SocketAddrV4, TcpStream},
+    os::windows::io::AsRawHandle,
     path::PathBuf,
     sync::{
         mpsc::{self, Receiver, RecvTimeoutError, Sender},
@@ -15,6 +19,7 @@ use std::{
     thread,
     time::{Duration, Instant},
 };
+use windows::{Win32::Foundation::HANDLE, Win32::System::Pipes::PeekNamedPipe};
 use windows_service::{
     service::{Service, ServiceAccess, ServiceState},
     service_manager::{ServiceManager, ServiceManagerAccess},
@@ -23,10 +28,18 @@ use windows_service::{
 pub const OPTION_PAUSE_SYNERGY: &str = "pause-synergy-on-incoming-sessions";
 
 const SERVICE_NAME: &str = "Synergy Core Daemon";
+const CORE_PROCESS_NAME: &str = "synergy-core.exe";
+const CORE_PIPE_PATH: &str = r"\\.\pipe\synergy-daemon";
+const REST_ADDRESS: SocketAddrV4 = SocketAddrV4::new(Ipv4Addr::LOCALHOST, 24803);
+const REST_RESTART_PATH: &str = "/v1/controls/restart";
 const RESUME_GRACE: Duration = Duration::from_secs(5);
 const RETRY_DELAY: Duration = Duration::from_secs(5);
 const SERVICE_TIMEOUT: Duration = Duration::from_secs(15);
 const SERVICE_POLL_INTERVAL: Duration = Duration::from_millis(100);
+const PIPE_CONNECT_TIMEOUT: Duration = Duration::from_secs(2);
+const PIPE_RESPONSE_TIMEOUT: Duration = Duration::from_secs(3);
+const REST_TIMEOUT: Duration = Duration::from_secs(5);
+const MAX_IPC_RESPONSE_SIZE: usize = 4096;
 
 static WORKER: OnceLock<Sender<Event>> = OnceLock::new();
 
@@ -166,11 +179,11 @@ impl Worker {
             }
             Action::Pause => {
                 self.restore_deadline = None;
-                self.record_result("stop", pause_service_if_running());
+                self.record_result("stop", pause_core_if_running());
             }
             Action::Restore => {
                 self.restore_deadline = None;
-                let result = restore_service_if_owned();
+                let result = restore_core_if_owned();
                 let retry =
                     result.is_err() && owns_pause() && (!enabled || self.policy.remote_count == 0);
                 self.record_result("start", result);
@@ -188,7 +201,7 @@ impl Worker {
             Err(err) => {
                 let detail = err.to_string();
                 if self.last_error.as_deref() != Some(&detail) {
-                    log::warn!("Failed to {action} Synergy service: {detail}");
+                    log::warn!("Failed to {action} Synergy core: {detail}");
                     record_event(action, "error", &detail);
                     self.last_error = Some(detail);
                 }
@@ -238,14 +251,11 @@ fn open_service() -> windows_service::Result<Service> {
     let manager = ServiceManager::local_computer(None::<&str>, ServiceManagerAccess::CONNECT)?;
     manager.open_service(
         SERVICE_NAME,
-        ServiceAccess::QUERY_STATUS
-            | ServiceAccess::START
-            | ServiceAccess::STOP
-            | ServiceAccess::PAUSE_CONTINUE,
+        ServiceAccess::QUERY_STATUS | ServiceAccess::START | ServiceAccess::PAUSE_CONTINUE,
     )
 }
 
-fn pause_service_if_running() -> ResultType<()> {
+fn pause_core_if_running() -> ResultType<()> {
     let service = open_service().context("open Synergy Core Daemon")?;
     let state = service
         .query_status()
@@ -254,30 +264,37 @@ fn pause_service_if_running() -> ResultType<()> {
     if state != ServiceState::Running {
         return Ok(());
     }
+    if !is_core_running() {
+        return Ok(());
+    }
 
     let newly_owned = !owns_pause();
     if newly_owned {
         create_ownership_marker()?;
     }
-    log::info!("Stopping Synergy Core Daemon for an authenticated remote session");
-    record_event("stop", "requested", "authenticated remote session active");
-    if let Err(err) = service.stop() {
+    log::info!("Stopping the Synergy core for an authenticated remote session");
+    record_event(
+        "stop",
+        "requested",
+        "authenticated remote session active; keeping Synergy tray alive",
+    );
+    if let Err(err) = send_core_ipc_command("stop", "ok") {
         if newly_owned {
             if let Err(marker_err) = clear_ownership_marker() {
                 log::warn!("Failed to clear Synergy ownership marker: {marker_err}");
             }
         }
-        return Err(err).context("request Synergy Core Daemon stop");
+        return Err(err).context("request graceful Synergy core stop");
     }
-    if !wait_for_state(&service, ServiceState::Stopped)? {
-        bail!("timed out waiting for Synergy Core Daemon to stop");
+    if !wait_for_core_state(false) {
+        bail!("timed out waiting for the Synergy core process to stop");
     }
-    log::info!("Synergy Core Daemon stopped by RustDesk");
-    record_event("stop", "complete", "service stopped");
+    log::info!("Synergy core stopped by RustDesk; daemon and tray remain running");
+    record_event("stop", "complete", "core stopped; tray remains running");
     Ok(())
 }
 
-fn restore_service_if_owned() -> ResultType<()> {
+fn restore_core_if_owned() -> ResultType<()> {
     if !owns_pause() {
         return Ok(());
     }
@@ -296,12 +313,7 @@ fn restore_service_if_owned() -> ResultType<()> {
 
     match state {
         ServiceState::Stopped => {
-            log::info!("Starting Synergy Core Daemon after the last remote session");
-            record_event(
-                "start",
-                "requested",
-                "no authenticated remote sessions remain",
-            );
+            log::info!("Starting Synergy Core Daemon before restoring its core process");
             let arguments: [&OsStr; 0] = [];
             service
                 .start(&arguments)
@@ -327,10 +339,174 @@ fn restore_service_if_owned() -> ResultType<()> {
         }
     }
 
+    if !is_core_running() {
+        log::info!("Restoring the Synergy core after the last remote session");
+        record_event(
+            "start",
+            "requested",
+            "no authenticated remote sessions remain",
+        );
+        request_core_restart()?;
+        if !wait_for_core_state(true) {
+            bail!("timed out waiting for the Synergy core process to start");
+        }
+    }
+
     clear_ownership_marker()?;
-    log::info!("Synergy Core Daemon is running; RustDesk ownership cleared");
-    record_event("start", "complete", "service running");
+    log::info!("Synergy core is running; RustDesk ownership cleared");
+    record_event("start", "complete", "core running; tray remained available");
     Ok(())
+}
+
+fn send_core_ipc_command(command: &str, expected_response: &str) -> ResultType<()> {
+    let mut pipe = open_core_pipe()?;
+    send_core_ipc_message(&mut pipe, "hello", "hello")?;
+    send_core_ipc_message(&mut pipe, "noop", "ok")?;
+    send_core_ipc_message(&mut pipe, command, expected_response)
+}
+
+fn open_core_pipe() -> ResultType<File> {
+    let deadline = Instant::now() + PIPE_CONNECT_TIMEOUT;
+    loop {
+        match OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(CORE_PIPE_PATH)
+        {
+            Ok(pipe) => return Ok(pipe),
+            Err(err) if Instant::now() < deadline => {
+                log::debug!("Synergy core pipe is not ready yet: {err}");
+                thread::sleep(SERVICE_POLL_INTERVAL);
+            }
+            Err(err) => return Err(err).context("open Synergy core IPC pipe"),
+        }
+    }
+}
+
+fn send_core_ipc_message(
+    pipe: &mut File,
+    message: &str,
+    expected_response: &str,
+) -> ResultType<()> {
+    pipe.write_all(message.as_bytes())
+        .with_context(|| format!("write Synergy core IPC message '{message}'"))?;
+    pipe.write_all(b"\n")
+        .with_context(|| format!("terminate Synergy core IPC message '{message}'"))?;
+    pipe.flush()
+        .with_context(|| format!("flush Synergy core IPC message '{message}'"))?;
+
+    let response = read_core_ipc_line(pipe)?;
+    if response != expected_response {
+        bail!(
+            "unexpected Synergy core IPC response to '{message}': '{response}' (expected '{expected_response}')"
+        );
+    }
+    Ok(())
+}
+
+fn read_core_ipc_line(pipe: &mut File) -> ResultType<String> {
+    let deadline = Instant::now() + PIPE_RESPONSE_TIMEOUT;
+    let mut response = Vec::new();
+    loop {
+        let mut available = 0u32;
+        unsafe {
+            PeekNamedPipe(
+                HANDLE(pipe.as_raw_handle()),
+                None,
+                0,
+                None,
+                Some(&mut available),
+                None,
+            )
+        }
+        .context("peek Synergy core IPC response")?;
+
+        if available > 0 {
+            let remaining = MAX_IPC_RESPONSE_SIZE.saturating_sub(response.len());
+            if remaining == 0 {
+                bail!("Synergy core IPC response exceeded {MAX_IPC_RESPONSE_SIZE} bytes");
+            }
+            let mut buffer = vec![0u8; (available as usize).min(remaining)];
+            let read = pipe
+                .read(&mut buffer)
+                .context("read Synergy core IPC response")?;
+            if read == 0 {
+                bail!("Synergy closed its core IPC pipe before replying");
+            }
+            response.extend_from_slice(&buffer[..read]);
+            if let Some(newline) = response.iter().position(|byte| *byte == b'\n') {
+                response.truncate(newline);
+                if response.last() == Some(&b'\r') {
+                    response.pop();
+                }
+                return String::from_utf8(response).context("decode Synergy core IPC response");
+            }
+        } else if Instant::now() >= deadline {
+            bail!("timed out waiting for a Synergy core IPC response");
+        } else {
+            thread::sleep(SERVICE_POLL_INTERVAL);
+        }
+    }
+}
+
+fn request_core_restart() -> ResultType<()> {
+    let mut stream = TcpStream::connect_timeout(&REST_ADDRESS.into(), REST_TIMEOUT)
+        .context("connect to the Synergy local control service")?;
+    stream
+        .set_read_timeout(Some(REST_TIMEOUT))
+        .context("set Synergy control response timeout")?;
+    stream
+        .set_write_timeout(Some(REST_TIMEOUT))
+        .context("set Synergy control request timeout")?;
+
+    let request = format!(
+        "POST {REST_RESTART_PATH} HTTP/1.1\r\nHost: {REST_ADDRESS}\r\nContent-Type: application/json\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{{}}"
+    );
+    stream
+        .write_all(request.as_bytes())
+        .context("send Synergy core restart request")?;
+    stream
+        .flush()
+        .context("flush Synergy core restart request")?;
+
+    let mut status_line = String::new();
+    BufReader::new(stream)
+        .read_line(&mut status_line)
+        .context("read Synergy core restart response")?;
+    if !http_status_is_success(&status_line) {
+        bail!("Synergy core restart returned an unsuccessful response: {status_line:?}");
+    }
+    Ok(())
+}
+
+fn http_status_is_success(status_line: &str) -> bool {
+    status_line
+        .split_whitespace()
+        .nth(1)
+        .and_then(|status| status.parse::<u16>().ok())
+        .is_some_and(|status| (200..300).contains(&status))
+}
+
+fn is_core_running() -> bool {
+    let mut system = System::new();
+    system.refresh_processes();
+    system.processes().values().any(|process| {
+        process
+            .name()
+            .trim_end_matches('\0')
+            .eq_ignore_ascii_case(CORE_PROCESS_NAME)
+    })
+}
+
+fn wait_for_core_state(running: bool) -> bool {
+    let deadline = Instant::now() + SERVICE_TIMEOUT;
+    while Instant::now() < deadline {
+        if is_core_running() == running {
+            return true;
+        }
+        thread::sleep(SERVICE_POLL_INTERVAL);
+    }
+    false
 }
 
 fn wait_for_state(service: &Service, desired: ServiceState) -> ResultType<bool> {
@@ -364,7 +540,7 @@ fn create_ownership_marker() -> ResultType<()> {
     }
     let mut marker = File::create(&path).context("create Synergy ownership marker")?;
     marker
-        .write_all(b"RustDesk stopped Synergy Core Daemon\n")
+        .write_all(b"RustDesk paused the Synergy core process\n")
         .context("write Synergy ownership marker")?;
     marker
         .sync_all()
@@ -469,5 +645,13 @@ mod tests {
             policy.transition(Event::Initialize, true, true),
             Action::Restore
         );
+    }
+
+    #[test]
+    fn accepts_only_successful_http_statuses() {
+        assert!(http_status_is_success("HTTP/1.1 200 OK\r\n"));
+        assert!(http_status_is_success("HTTP/1.1 204 No Content\r\n"));
+        assert!(!http_status_is_success("HTTP/1.1 404 Not Found\r\n"));
+        assert!(!http_status_is_success("not http"));
     }
 }

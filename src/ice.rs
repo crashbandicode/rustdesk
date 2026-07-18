@@ -183,7 +183,11 @@ pub async fn gather_srflx_on(
     let req = build_binding_request(&txn);
     socket.send_to(&req, target).await?;
     let mut buf = [0u8; 512];
-    let (n, _src) = timeout(Duration::from_millis(timeout_ms), socket.recv_from(&mut buf)).await??;
+    let (n, _src) = timeout(
+        Duration::from_millis(timeout_ms),
+        socket.recv_from(&mut buf),
+    )
+    .await??;
     match parse_mapped_address(&buf[..n]) {
         Some(addr) => Ok(addr),
         None => bail!("STUN response from {} had no mapped address", stun_server),
@@ -191,7 +195,10 @@ pub async fn gather_srflx_on(
 }
 
 /// Convenience: bind a fresh socket and gather its srflx candidate.
-pub async fn gather_srflx(stun_server: &str, timeout_ms: u64) -> ResultType<(UdpSocket, SocketAddr)> {
+pub async fn gather_srflx(
+    stun_server: &str,
+    timeout_ms: u64,
+) -> ResultType<(UdpSocket, SocketAddr)> {
     let socket = UdpSocket::bind("0.0.0.0:0").await?;
     let srflx = gather_srflx_on(&socket, stun_server, timeout_ms).await?;
     Ok((socket, srflx))
@@ -370,6 +377,15 @@ pub fn direct_candidate_route(
         _ => return None,
     };
 
+    // The conservative same-private-/24 fallback is enough to prove the common
+    // same-Wi-Fi path and avoids an expensive full interface enumeration on
+    // Windows. On hosts with several VPN/virtual adapters,
+    // `default_net::get_interfaces()` can take multiple seconds, delaying the
+    // controlled peer's PunchHoleSent response until the initiator retries.
+    if same_private_24(source, peer) {
+        return Some((source.into(), DirectCandidateKind::Lan));
+    }
+
     #[cfg(not(target_os = "ios"))]
     for itf in default_net::get_interfaces() {
         for network in &itf.ipv4 {
@@ -381,9 +397,6 @@ pub fn direct_candidate_route(
         }
     }
 
-    if same_private_24(source, peer) {
-        return Some((source.into(), DirectCandidateKind::Lan));
-    }
     None
 }
 
@@ -436,7 +449,11 @@ pub fn migrate_legacy_relay_policy(
 /// Encode host + srflx candidates into the single signaling string.
 pub fn encode_candidates(hosts: &[String], srflx: Option<&str>) -> String {
     let mut parts = Vec::new();
-    let hosts: Vec<&str> = hosts.iter().map(|s| s.as_str()).filter(|s| !s.is_empty()).collect();
+    let hosts: Vec<&str> = hosts
+        .iter()
+        .map(|s| s.as_str())
+        .filter(|s| !s.is_empty())
+        .collect();
     if !hosts.is_empty() {
         parts.push(format!("h={}", hosts.join(",")));
     }
@@ -543,6 +560,23 @@ mod tests {
     }
 
     #[test]
+    fn conservative_same_private_24_identifies_fast_lan_path() {
+        use std::net::Ipv4Addr;
+        assert!(same_private_24(
+            Ipv4Addr::new(192, 168, 0, 191),
+            Ipv4Addr::new(192, 168, 0, 141),
+        ));
+        assert!(!same_private_24(
+            Ipv4Addr::new(192, 168, 0, 191),
+            Ipv4Addr::new(192, 168, 1, 141),
+        ));
+        assert!(!same_private_24(
+            Ipv4Addr::new(100, 88, 233, 107),
+            Ipv4Addr::new(100, 88, 233, 17),
+        ));
+    }
+
+    #[test]
     fn interface_subnet_rejects_mismatch_and_unknown_prefix() {
         use std::net::Ipv4Addr;
         assert_eq!(
@@ -631,7 +665,10 @@ mod tests {
         assert_eq!(req.len(), 20);
         assert_eq!(u16::from_be_bytes([req[0], req[1]]), BINDING_REQUEST);
         assert_eq!(u16::from_be_bytes([req[2], req[3]]), 0); // no attributes
-        assert_eq!(u32::from_be_bytes([req[4], req[5], req[6], req[7]]), MAGIC_COOKIE);
+        assert_eq!(
+            u32::from_be_bytes([req[4], req[5], req[6], req[7]]),
+            MAGIC_COOKIE
+        );
         assert_eq!(&req[8..20], &txn);
     }
 

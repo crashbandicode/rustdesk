@@ -2752,7 +2752,7 @@ class SimpleWrapper<T> {
   SimpleWrapper(this.value);
 }
 
-/// Wakelock manager with reference counting for desktop.
+/// Wakelock manager with reference counting across every platform.
 /// Ensures wakelock is only disabled when all sessions are closed/minimized.
 ///
 /// Note: Each isolate has its own WakelockPlus instance with independent assertion.
@@ -2778,9 +2778,7 @@ class WakelockManager {
         return; // Don't enable wakelock if user disabled keep awake
       }
     }
-    if (isDesktop) {
-      _enabledKeys.add(key);
-    }
+    _enabledKeys.add(key);
     if (!_enabled) {
       _enabled = true;
       WakelockPlus.enable();
@@ -2788,11 +2786,9 @@ class WakelockManager {
   }
 
   static void disable(UniqueKey key) {
-    if (isDesktop) {
-      _enabledKeys.remove(key);
-      if (_enabledKeys.isNotEmpty) {
-        return;
-      }
+    _enabledKeys.remove(key);
+    if (_enabledKeys.isNotEmpty) {
+      return;
     }
     if (_enabled) {
       WakelockPlus.disable();
