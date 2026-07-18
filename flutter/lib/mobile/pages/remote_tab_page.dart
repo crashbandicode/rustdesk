@@ -367,8 +367,19 @@ class _MobileConnectionTabPageState extends State<MobileConnectionTabPage>
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
     _lifecycleCoordinator.dispose();
+    final parentMustRestoreGlobalUi = _sessions.length > 1;
     for (final session in _sessions) {
       _requestNativeClose(session, source: 'tab_host_disposed');
+    }
+    // With multiple tabs each child deliberately skips global cleanup so a
+    // sibling remains usable when only one tab is removed. If Android's Back
+    // gesture disposes the whole host, the parent must perform that cleanup
+    // once because every child still has the skip flag.
+    if (parentMustRestoreGlobalUi) {
+      stateGlobal.isInMainPage = true;
+      unawaited(gFFI.invokeMethod('enable_soft_keyboard', true));
+      unawaited(SystemChrome.setEnabledSystemUIMode(SystemUiMode.manual,
+          overlays: SystemUiOverlay.values));
     }
     super.dispose();
   }
