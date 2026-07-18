@@ -27,6 +27,7 @@ import '../../utils/image.dart';
 import '../ime_input_diff.dart';
 import '../keyboard_image_paste.dart';
 import '../native_android_ime.dart';
+import '../remote_tab_lifecycle.dart';
 import '../widgets/dialog.dart';
 import '../widgets/custom_scale_widget.dart';
 
@@ -54,6 +55,7 @@ class RemotePage extends StatefulWidget {
       this.isSharedPassword,
       this.forceRelay,
       this.active = true,
+      required this.lifecycleTarget,
       this.onCloseRequested})
       : super(key: key);
 
@@ -63,13 +65,14 @@ class RemotePage extends StatefulWidget {
   final bool? isSharedPassword;
   final bool? forceRelay;
   final bool active;
+  final MobileSessionLifecycleTarget lifecycleTarget;
   final VoidCallback? onCloseRequested;
 
   @override
   State<RemotePage> createState() => _RemotePageState(id);
 }
 
-class _RemotePageState extends State<RemotePage> with WidgetsBindingObserver {
+class _RemotePageState extends State<RemotePage> {
   late final FFI _ffi;
   Timer? _timer;
   bool _showBar = !isWebDesktop;
@@ -78,6 +81,8 @@ class _RemotePageState extends State<RemotePage> with WidgetsBindingObserver {
   Orientation? _currentOrientation;
   final _uniqueKey = UniqueKey();
   Timer? _iosKeyboardWorkaroundTimer;
+  Timer? _resumeOverlayTimer;
+  bool _awaitingResumeFrame = false;
 
   final _blockableOverlayState = BlockableOverlayState();
 
@@ -126,6 +131,12 @@ class _RemotePageState extends State<RemotePage> with WidgetsBindingObserver {
       'active': widget.active,
     }));
     _ffi = FFI(widget.sessionId);
+    widget.lifecycleTarget.attach(
+      onPaused: _handleAppPaused,
+      onResumed: _handleAppResumed,
+    );
+    _ffi.imageModel.setPresentationActive(widget.active);
+    _ffi.imageModel.addCallbackOnFrame(_handleIncomingFrame);
     _ffi.onCloseRequested = widget.onCloseRequested;
     _ffi.chatModel.voiceCallStatus.value = VoiceCallStatus.notStarted;
     _ffi.dialogManager.loadMobileActionsOverlayVisible();
@@ -165,8 +176,6 @@ class _RemotePageState extends State<RemotePage> with WidgetsBindingObserver {
           isKeyboardVisible: keyboardVisibilityController.isVisible);
       unawaited(_applySavedMouseStartPosition());
     });
-    WidgetsBinding.instance.addObserver(this);
-
     inputModel.keyboardInputAllowed = true;
 
     // Wayland sessions may use clipboard-based text input on the controlled side.
@@ -191,8 +200,16 @@ class _RemotePageState extends State<RemotePage> with WidgetsBindingObserver {
       'peer_id': widget.id,
       'active': widget.active,
     }));
+    _ffi.imageModel.setPresentationActive(widget.active);
     if (widget.active) {
       _physicalFocusNode.requestFocus();
+      if (_ffi.ffiModel.pi.isSet.value) {
+        unawaited(sessionRefreshVideo(_ffi.sessionId, _ffi.ffiModel.pi));
+        unawaited(DiagnosticSupport.event('mobile_tab_video_refreshed', {
+          'session_id': widget.sessionId.toString(),
+          'peer_id': widget.id,
+        }));
+      }
       return;
     }
     _showEdit = false;
@@ -206,7 +223,9 @@ class _RemotePageState extends State<RemotePage> with WidgetsBindingObserver {
       'peer_id': widget.id,
       'active': widget.active,
     }));
-    WidgetsBinding.instance.removeObserver(this);
+    widget.lifecycleTarget.detach();
+    _resumeOverlayTimer?.cancel();
+    _ffi.imageModel.removeCallbackOnFrame(_handleIncomingFrame);
     // Close the session up-front. `_ffi.close()` below only calls `sessionClose`
     // after several awaits (canvas save, image update, the `enable_soft_keyboard`
     // platform call), so if the app is backgrounded while this page is disposing,
@@ -244,24 +263,58 @@ class _RemotePageState extends State<RemotePage> with WidgetsBindingObserver {
     _ffi.chatModel.onVoiceCallClosed("End connetion");
   }
 
-  @override
-  void didChangeAppLifecycleState(AppLifecycleState state) {
-    unawaited(DiagnosticSupport.event('mobile_lifecycle_changed', {
+  void _handleAppPaused() {
+    _resumeOverlayTimer?.cancel();
+    _awaitingResumeFrame = false;
+    _ffi.ffiModel.onMobileAppPaused();
+    unawaited(DiagnosticSupport.event('mobile_session_lifecycle_applied', {
       'session_id': widget.sessionId.toString(),
       'peer_id': widget.id,
-      'state': state.name,
+      'state': AppLifecycleState.paused.name,
       'active': widget.active,
     }));
-    if (state == AppLifecycleState.resumed) {
-      if (widget.active) {
-        trySyncClipboard();
-      }
-      _ffi.ffiModel.onMobileAppResumed();
-    } else if (state == AppLifecycleState.inactive ||
-        state == AppLifecycleState.hidden ||
-        state == AppLifecycleState.paused) {
-      _ffi.ffiModel.onMobileAppPaused();
+  }
+
+  void _handleAppResumed() {
+    _resumeOverlayTimer?.cancel();
+    if (mounted) {
+      setState(() => _awaitingResumeFrame = true);
+    } else {
+      _awaitingResumeFrame = true;
     }
+    if (widget.active) trySyncClipboard();
+    final reconnectDispatched = _ffi.ffiModel.onMobileAppResumed();
+    unawaited(DiagnosticSupport.event('mobile_session_lifecycle_applied', {
+      'session_id': widget.sessionId.toString(),
+      'peer_id': widget.id,
+      'state': AppLifecycleState.resumed.name,
+      'active': widget.active,
+      'reconnect_dispatched': reconnectDispatched,
+    }));
+    if (!reconnectDispatched) {
+      _resumeOverlayTimer = Timer(const Duration(milliseconds: 750), () {
+        _clearResumeOverlay(source: 'healthy_timeout');
+      });
+    }
+  }
+
+  void _handleIncomingFrame() {
+    if (!_awaitingResumeFrame) return;
+    _clearResumeOverlay(source: 'fresh_frame');
+  }
+
+  void _clearResumeOverlay({required String source}) {
+    if (!_awaitingResumeFrame) return;
+    _resumeOverlayTimer?.cancel();
+    _resumeOverlayTimer = null;
+    _awaitingResumeFrame = false;
+    if (mounted) setState(() {});
+    unawaited(DiagnosticSupport.event('mobile_resume_guard_cleared', {
+      'session_id': widget.sessionId.toString(),
+      'peer_id': widget.id,
+      'active': widget.active,
+      'source': source,
+    }));
   }
 
   // For client side
@@ -693,6 +746,42 @@ class _RemotePageState extends State<RemotePage> with WidgetsBindingObserver {
                                   );
                                 }),
                               ),
+                      );
+                    }),
+                    OverlayEntry(builder: (context) {
+                      if (!_awaitingResumeFrame) return const Offstage();
+                      return IgnorePointer(
+                        child: ColoredBox(
+                          color: Colors.black45,
+                          child: Center(
+                            child: DecoratedBox(
+                              decoration: BoxDecoration(
+                                color: MyTheme.canvasColor.withAlpha(235),
+                                borderRadius: BorderRadius.circular(12),
+                              ),
+                              child: Padding(
+                                padding: const EdgeInsets.symmetric(
+                                  horizontal: 18,
+                                  vertical: 14,
+                                ),
+                                child: Row(
+                                  mainAxisSize: MainAxisSize.min,
+                                  children: [
+                                    const SizedBox(
+                                      width: 20,
+                                      height: 20,
+                                      child: CircularProgressIndicator(
+                                        strokeWidth: 2,
+                                      ),
+                                    ),
+                                    const SizedBox(width: 12),
+                                    Text(translate('Connecting...')),
+                                  ],
+                                ),
+                              ),
+                            ),
+                          ),
+                        ),
                       );
                     })
                   ],
