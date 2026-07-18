@@ -76,8 +76,7 @@ List<Peer> _deduplicatePeers(Iterable<Peer> source, {bool sort = false}) {
   for (final peer in source) {
     if (peer.id.isEmpty) continue;
     final existing = peersById[peer.id];
-    if (existing == null ||
-        (existing.alias.isEmpty && peer.alias.isNotEmpty)) {
+    if (existing == null || (existing.alias.isEmpty && peer.alias.isNotEmpty)) {
       peersById[peer.id] = peer;
     }
   }
@@ -156,8 +155,7 @@ class _MobileConnectionPickerDialogState
   @override
   void initState() {
     super.initState();
-    _enteringIdManually =
-        widget.source == _MobileConnectionPickerSource.manual;
+    _enteringIdManually = widget.source == _MobileConnectionPickerSource.manual;
     if (widget.source == _MobileConnectionPickerSource.recent) {
       gFFI.recentPeersModel.addListener(_refreshRecentPeers);
       bind.mainLoadRecentPeers();
@@ -340,6 +338,7 @@ class _MobileConnectionTabPageState extends State<MobileConnectionTabPage>
     with WidgetsBindingObserver {
   final List<_MobileRemoteSession> _sessions = [];
   late final MobileTabLifecycleCoordinator _lifecycleCoordinator;
+  late final MobileSessionCloseCoordinator<SessionID> _closeCoordinator;
   int _selectedIndex = 0;
 
   @override
@@ -353,8 +352,13 @@ class _MobileConnectionTabPageState extends State<MobileConnectionTabPage>
     ));
     final lifecycleState = WidgetsBinding.instance.lifecycleState;
     _lifecycleCoordinator = MobileTabLifecycleCoordinator(
-      initiallyBackgrounded: lifecycleState != null &&
-          lifecycleState != AppLifecycleState.resumed,
+      initiallyBackgrounded:
+          lifecycleState != null && lifecycleState != AppLifecycleState.resumed,
+    );
+    _closeCoordinator = MobileSessionCloseCoordinator<SessionID>(
+      onCloseRequested: (sessionId) {
+        unawaited(bind.sessionClose(sessionId: sessionId));
+      },
     );
     WidgetsBinding.instance.addObserver(this);
   }
@@ -363,13 +367,27 @@ class _MobileConnectionTabPageState extends State<MobileConnectionTabPage>
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
     _lifecycleCoordinator.dispose();
+    for (final session in _sessions) {
+      _requestNativeClose(session, source: 'tab_host_disposed');
+    }
     super.dispose();
+  }
+
+  void _requestNativeClose(_MobileRemoteSession session,
+      {required String source}) {
+    if (!_closeCoordinator.request(session.sessionId)) return;
+    unawaited(DiagnosticSupport.event('mobile_native_session_close_requested', {
+      'session_id': session.sessionId.toString(),
+      'peer_id': session.id,
+      'source': source,
+    }));
   }
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
     if (_sessions.isEmpty) return;
-    final targets = _sessions.map((session) => session.lifecycleTarget).toList();
+    final targets =
+        _sessions.map((session) => session.lifecycleTarget).toList();
     final selected = _sessions[_selectedIndex].lifecycleTarget;
     final changed = state == AppLifecycleState.resumed
         ? _lifecycleCoordinator.resumeAll(targets, selected: selected)
@@ -438,7 +456,9 @@ class _MobileConnectionTabPageState extends State<MobileConnectionTabPage>
     if (index < 0) return;
 
     final closesLastSession = _sessions.length == 1;
-    _lifecycleCoordinator.remove(_sessions[index].lifecycleTarget);
+    final closingSession = _sessions[index];
+    _lifecycleCoordinator.remove(closingSession.lifecycleTarget);
+    _requestNativeClose(closingSession, source: 'tab_removed');
     setState(() {
       _sessions.removeAt(index);
       if (_sessions.isNotEmpty) {
@@ -528,6 +548,8 @@ class _MobileConnectionTabPageState extends State<MobileConnectionTabPage>
                       forceRelay: session.forceRelay,
                       active: i == _selectedIndex,
                       lifecycleTarget: session.lifecycleTarget,
+                      closeNativeSessionOnDispose: false,
+                      restoreGlobalUiOnDispose: _sessions.length == 1,
                       onCloseRequested: () => _closeSession(session.sessionId),
                     );
                   }(),

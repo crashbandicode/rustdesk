@@ -2,6 +2,21 @@ import 'dart:async';
 
 typedef MobileSessionLifecycleCallback = void Function();
 
+class MobileSessionCloseCoordinator<T> {
+  MobileSessionCloseCoordinator({required this.onCloseRequested});
+
+  final void Function(T sessionId) onCloseRequested;
+  final Set<T> _requested = {};
+
+  bool request(T sessionId) {
+    if (!_requested.add(sessionId)) return false;
+    onCloseRequested(sessionId);
+    return true;
+  }
+
+  bool wasRequested(T sessionId) => _requested.contains(sessionId);
+}
+
 class MobileSessionLifecycleTarget {
   MobileSessionLifecycleTarget({
     required this.sessionId,
