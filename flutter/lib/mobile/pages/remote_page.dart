@@ -56,6 +56,8 @@ class RemotePage extends StatefulWidget {
       this.forceRelay,
       this.active = true,
       required this.lifecycleTarget,
+      this.closeNativeSessionOnDispose = true,
+      this.restoreGlobalUiOnDispose = true,
       this.onCloseRequested})
       : super(key: key);
 
@@ -66,6 +68,8 @@ class RemotePage extends StatefulWidget {
   final bool? forceRelay;
   final bool active;
   final MobileSessionLifecycleTarget lifecycleTarget;
+  final bool closeNativeSessionOnDispose;
+  final bool restoreGlobalUiOnDispose;
   final VoidCallback? onCloseRequested;
 
   @override
@@ -226,21 +230,21 @@ class _RemotePageState extends State<RemotePage> {
     widget.lifecycleTarget.detach();
     _resumeOverlayTimer?.cancel();
     _ffi.imageModel.removeCallbackOnFrame(_handleIncomingFrame);
-    // Close the session up-front. `_ffi.close()` below only calls `sessionClose`
-    // after several awaits (canvas save, image update, the `enable_soft_keyboard`
-    // platform call), so if the app is backgrounded while this page is disposing,
-    // dispose can be suspended before reaching it and the connection is never torn
-    // down. The reconnect then re-attaches to the leaked session and is stuck on
-    // "Connecting...". Dispatching it here makes teardown happen synchronously on
-    // pop; the `sessionClose` in `_ffi.close()` becomes a no-op once removed.
-    unawaited(bind.sessionClose(sessionId: sessionId));
+    // A standalone page owns its native close and dispatches it before any async
+    // UI cleanup. The multi-tab host owns native session teardown explicitly, so
+    // keyed child reconciliation can never close a sibling session by mistake.
+    if (widget.closeNativeSessionOnDispose) {
+      unawaited(bind.sessionClose(sessionId: sessionId));
+    }
     // https://github.com/flutter/flutter/issues/64935
     super.dispose();
     _ffi.dialogManager.hideMobileActionsOverlay(store: false);
     _ffi.inputModel.listenToMouse(false);
     _ffi.imageModel.disposeImage();
     _ffi.cursorModel.disposeImages();
-    await _ffi.invokeMethod("enable_soft_keyboard", true);
+    if (widget.restoreGlobalUiOnDispose) {
+      await _ffi.invokeMethod("enable_soft_keyboard", true);
+    }
     _nativeAndroidImeController.hide();
     _nativeAndroidImeController.reset();
     _mobileFocusNode.dispose();
@@ -248,12 +252,14 @@ class _RemotePageState extends State<RemotePage> {
     clearWaylandKeyboardPromptSuppressedForConnection(sessionId.toString());
     _waylandKeyboardGateWorker?.dispose();
     inputModel.keyboardInputAllowed = true;
-    await _ffi.close();
+    await _ffi.close(closeSession: widget.closeNativeSessionOnDispose);
     _timer?.cancel();
     _iosKeyboardWorkaroundTimer?.cancel();
     _ffi.dialogManager.dismissAll();
-    await SystemChrome.setEnabledSystemUIMode(SystemUiMode.manual,
-        overlays: SystemUiOverlay.values);
+    if (widget.restoreGlobalUiOnDispose) {
+      await SystemChrome.setEnabledSystemUIMode(SystemUiMode.manual,
+          overlays: SystemUiOverlay.values);
+    }
     WakelockManager.disable(_uniqueKey);
     await keyboardSubscription.cancel();
     removeSharedStates(widget.id);
