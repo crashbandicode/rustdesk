@@ -1,11 +1,15 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_hbb/common.dart';
+import 'package:flutter_hbb/diagnostics.dart';
 import 'package:flutter_hbb/models/peer_model.dart';
 import 'package:flutter_hbb/models/platform_model.dart';
 import 'package:flutter_hbb/models/state_model.dart';
 import 'package:uuid/uuid.dart';
 
+import '../remote_tab_lifecycle.dart';
 import 'remote_page.dart';
 
 const _maxConcurrentMobileConnections = 3;
@@ -35,13 +39,20 @@ class _MobileRemoteSession {
     this.password,
     this.isSharedPassword,
     this.forceRelay,
-  }) : sessionId = Uuid().v4obj();
+  }) {
+    sessionId = Uuid().v4obj();
+    lifecycleTarget = MobileSessionLifecycleTarget(
+      sessionId: sessionId.toString(),
+      peerId: id,
+    );
+  }
 
   final String id;
   final String? password;
   final bool? isSharedPassword;
   final bool? forceRelay;
-  final SessionID sessionId;
+  late final SessionID sessionId;
+  late final MobileSessionLifecycleTarget lifecycleTarget;
 }
 
 class _MobileConnectionRequest {
@@ -325,8 +336,10 @@ class _ConnectionPeerLabel extends StatelessWidget {
   }
 }
 
-class _MobileConnectionTabPageState extends State<MobileConnectionTabPage> {
+class _MobileConnectionTabPageState extends State<MobileConnectionTabPage>
+    with WidgetsBindingObserver {
   final List<_MobileRemoteSession> _sessions = [];
+  late final MobileTabLifecycleCoordinator _lifecycleCoordinator;
   int _selectedIndex = 0;
 
   @override
@@ -338,6 +351,41 @@ class _MobileConnectionTabPageState extends State<MobileConnectionTabPage> {
       isSharedPassword: widget.isSharedPassword,
       forceRelay: widget.forceRelay,
     ));
+    final lifecycleState = WidgetsBinding.instance.lifecycleState;
+    _lifecycleCoordinator = MobileTabLifecycleCoordinator(
+      initiallyBackgrounded: lifecycleState != null &&
+          lifecycleState != AppLifecycleState.resumed,
+    );
+    WidgetsBinding.instance.addObserver(this);
+  }
+
+  @override
+  void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    _lifecycleCoordinator.dispose();
+    super.dispose();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (_sessions.isEmpty) return;
+    final targets = _sessions.map((session) => session.lifecycleTarget).toList();
+    final selected = _sessions[_selectedIndex].lifecycleTarget;
+    final changed = state == AppLifecycleState.resumed
+        ? _lifecycleCoordinator.resumeAll(targets, selected: selected)
+        : state == AppLifecycleState.inactive ||
+                state == AppLifecycleState.hidden ||
+                state == AppLifecycleState.paused
+            ? _lifecycleCoordinator.pauseAll(targets)
+            : false;
+    if (changed) {
+      unawaited(DiagnosticSupport.event('mobile_tabs_lifecycle_coordinated', {
+        'state': state.name,
+        'session_count': targets.length,
+        'selected_session_id': selected.sessionId,
+        'selected_peer_id': selected.peerId,
+      }));
+    }
   }
 
   Future<void> _showNewConnectionDialog() async {
@@ -368,7 +416,7 @@ class _MobileConnectionTabPageState extends State<MobileConnectionTabPage> {
 
     final existing = _sessions.indexWhere((e) => e.id == normalizedId);
     if (existing >= 0) {
-      setState(() => _selectedIndex = existing);
+      _selectSession(existing);
       return;
     }
 
@@ -390,6 +438,7 @@ class _MobileConnectionTabPageState extends State<MobileConnectionTabPage> {
     if (index < 0) return;
 
     final closesLastSession = _sessions.length == 1;
+    _lifecycleCoordinator.remove(_sessions[index].lifecycleTarget);
     setState(() {
       _sessions.removeAt(index);
       if (_sessions.isNotEmpty) {
@@ -413,6 +462,18 @@ class _MobileConnectionTabPageState extends State<MobileConnectionTabPage> {
               overlays: []);
         }
       });
+    }
+  }
+
+  void _selectSession(int index) {
+    if (index < 0 || index >= _sessions.length) return;
+    setState(() => _selectedIndex = index);
+    final target = _sessions[index].lifecycleTarget;
+    if (_lifecycleCoordinator.prioritize(target)) {
+      unawaited(DiagnosticSupport.event('mobile_tab_resume_prioritized', {
+        'session_id': target.sessionId,
+        'peer_id': target.peerId,
+      }));
     }
   }
 
@@ -466,6 +527,7 @@ class _MobileConnectionTabPageState extends State<MobileConnectionTabPage> {
                       isSharedPassword: session.isSharedPassword,
                       forceRelay: session.forceRelay,
                       active: i == _selectedIndex,
+                      lifecycleTarget: session.lifecycleTarget,
                       onCloseRequested: () => _closeSession(session.sessionId),
                     );
                   }(),
@@ -492,7 +554,7 @@ class _MobileConnectionTabPageState extends State<MobileConnectionTabPage> {
                   final session = _sessions[index];
                   final selected = index == _selectedIndex;
                   return InkWell(
-                    onTap: () => setState(() => _selectedIndex = index),
+                    onTap: () => _selectSession(index),
                     child: Container(
                       constraints: const BoxConstraints(minWidth: 118),
                       padding: const EdgeInsets.only(left: 12, right: 4),
