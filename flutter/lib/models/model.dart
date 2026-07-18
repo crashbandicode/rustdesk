@@ -40,6 +40,7 @@ import 'package:file_picker/file_picker.dart';
 import 'package:vector_math/vector_math.dart' show Vector2;
 
 import '../common.dart';
+import '../mobile/remote_tab_lifecycle.dart';
 import '../utils/image.dart' as img;
 import '../common/widgets/dialog.dart';
 import 'input_model.dart';
@@ -1078,7 +1079,7 @@ class FfiModel with ChangeNotifier {
     _mobileAppBackgrounded = true;
   }
 
-  void onMobileAppResumed() {
+  bool onMobileAppResumed() {
     _mobileAppBackgrounded = false;
     final target = parent.target;
     if (!_transientNetworkReconnectPending || target == null || target.closed) {
@@ -1088,7 +1089,7 @@ class FfiModel with ChangeNotifier {
         'pending': _transientNetworkReconnectPending,
         'closed': target?.closed ?? true,
       }));
-      return;
+      return false;
     }
     _transientNetworkReconnectStartTime = DateTime.now();
     _transientNetworkReconnectTimer?.cancel();
@@ -1099,6 +1100,7 @@ class FfiModel with ChangeNotifier {
       'source': 'app_resumed',
     }));
     reconnect(target.dialogManager, sessionId, false);
+    return true;
   }
 
   void onConnectionReady() {
@@ -2046,6 +2048,9 @@ class ImageModel with ChangeNotifier {
   WeakReference<FFI> parent;
 
   final List<Function(String)> callbacksOnFirstImage = [];
+  final List<VoidCallback> _callbacksOnFrame = [];
+  final MobileTabFrameDecodePolicy _mobileFrameDecodePolicy =
+      MobileTabFrameDecodePolicy();
 
   ImageModel(this.parent) {
     sessionId = parent.target!.sessionId;
@@ -2054,6 +2059,19 @@ class ImageModel with ChangeNotifier {
   get useTextureRender => _useTextureRender;
 
   addCallbackOnFirstImage(Function(String) cb) => callbacksOnFirstImage.add(cb);
+
+  void addCallbackOnFrame(VoidCallback callback) {
+    _callbacksOnFrame.add(callback);
+  }
+
+  void removeCallbackOnFrame(VoidCallback callback) {
+    _callbacksOnFrame.remove(callback);
+  }
+
+  void setPresentationActive(bool active) {
+    if (!isMobile) return;
+    _mobileFrameDecodePolicy.setActive(active);
+  }
 
   clearImage() => _image = null;
 
@@ -2079,10 +2097,23 @@ class ImageModel with ChangeNotifier {
   }
 
   onRgba(int display, Uint8List rgba) async {
-    try {
-      await decodeAndUpdate(display, rgba);
-    } catch (e) {
-      debugPrint('onRgba error: $e');
+    var decoded = false;
+    if (!isMobile || _mobileFrameDecodePolicy.shouldDecode(DateTime.now())) {
+      try {
+        await decodeAndUpdate(display, rgba);
+        decoded = true;
+      } catch (e) {
+        debugPrint('onRgba error: $e');
+      }
+    }
+    if (decoded) {
+      for (final callback in List<VoidCallback>.of(_callbacksOnFrame)) {
+        try {
+          callback();
+        } catch (e) {
+          debugPrint('onRgba callback error: $e');
+        }
+      }
     }
     platformFFI.nextRgba(sessionId, display);
   }
@@ -4207,6 +4238,7 @@ class FFI {
           ffiModel.pi.currentDisplay);
     }
     imageModel.callbacksOnFirstImage.clear();
+    imageModel._callbacksOnFrame.clear();
     await imageModel.update(null);
     cursorModel.clear();
     ffiModel.clear();
