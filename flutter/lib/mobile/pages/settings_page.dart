@@ -870,7 +870,7 @@ class _SettingsState extends State<SettingsPage> with WidgetsBindingObserver {
               title: Text(
                   translate('Keep remote sessions connected in background')),
               description: Text(translate(
-                  'Uses an Android foreground service and additional battery while outgoing sessions are open. When off, sessions reconnect after RustDesk resumes.')),
+                  'Uses an Android foreground service while outgoing sessions are open. In the background, video is limited to 1 FPS and audio is paused to reduce battery use. When off, sessions reconnect after RustDesk resumes.')),
               initialValue: _keepSessionsConnectedInBackground,
               onToggle: (value) async {
                 await setMobileOutgoingSessionKeepaliveEnabled(value);
