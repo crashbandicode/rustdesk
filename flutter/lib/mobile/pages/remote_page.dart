@@ -20,6 +20,7 @@ import '../../common.dart';
 import '../../common/widgets/overlay.dart';
 import '../../common/widgets/dialog.dart';
 import '../../common/widgets/remote_input.dart';
+import '../../models/connection_policy.dart';
 import '../../models/input_model.dart';
 import '../../models/model.dart';
 import '../../models/platform_model.dart';
@@ -27,6 +28,7 @@ import '../../utils/image.dart';
 import '../ime_input_diff.dart';
 import '../keyboard_image_paste.dart';
 import '../native_android_ime.dart';
+import '../outgoing_session_keepalive.dart';
 import '../remote_tab_lifecycle.dart';
 import '../widgets/dialog.dart';
 import '../widgets/custom_scale_widget.dart';
@@ -280,7 +282,8 @@ class _RemotePageState extends State<RemotePage> {
     _resumeOverlayTimer?.cancel();
     _awaitingResumeFrame = false;
     _inputLifecycleGuard.pause();
-    _ffi.ffiModel.onMobileAppPaused();
+    _ffi.ffiModel.onMobileAppPaused(
+        allowBackgroundRecovery: mobileOutgoingSessionKeepaliveEnabled());
     unawaited(DiagnosticSupport.event('mobile_session_lifecycle_applied', {
       'session_id': widget.sessionId.toString(),
       'peer_id': widget.id,
@@ -323,13 +326,42 @@ class _RemotePageState extends State<RemotePage> {
       'reconnect_dispatched': reconnectDispatched,
     }));
     if (!reconnectDispatched) {
-      _resumeOverlayTimer = Timer(const Duration(milliseconds: 750), () {
-        _clearResumeOverlay(source: 'healthy_timeout');
-      });
+      if (_ffi.ffiModel.pi.isSet.value) {
+        // Ask the controlled peer for a key frame. A live transport responds
+        // even when the desktop is otherwise static, so this distinguishes a
+        // healthy retained socket from Android's common half-open resume case.
+        unawaited(sessionRefreshVideo(_ffi.sessionId, _ffi.ffiModel.pi));
+        unawaited(DiagnosticSupport.event('mobile_resume_probe_sent', {
+          'session_id': widget.sessionId.toString(),
+          'peer_id': widget.id,
+          'active': widget.active,
+        }));
+        _resumeOverlayTimer = Timer(kMobileResumeFrameProbeTimeout, () {
+          _resumeOverlayTimer = null;
+          if (!mounted || !_awaitingResumeFrame) return;
+          final started = _ffi.ffiModel.beginMobileResumeRecovery();
+          unawaited(DiagnosticSupport.event('mobile_resume_probe_timed_out', {
+            'session_id': widget.sessionId.toString(),
+            'peer_id': widget.id,
+            'active': widget.active,
+            'reconnect_dispatched': started,
+          }));
+          if (!started) {
+            _clearResumeOverlay(source: 'reconnect_unavailable');
+          }
+        });
+      } else {
+        // The session was still making its first connection when Android
+        // backgrounded it. Let that initial native handshake continue.
+        _resumeOverlayTimer = Timer(const Duration(milliseconds: 750), () {
+          _clearResumeOverlay(source: 'initial_connection');
+        });
+      }
     }
   }
 
   void _handleIncomingFrame() {
+    _ffi.ffiModel.onMobileFrameHealthy();
     if (!_awaitingResumeFrame) return;
     _clearResumeOverlay(source: 'fresh_frame');
   }

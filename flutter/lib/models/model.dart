@@ -129,11 +129,14 @@ class FfiModel with ChangeNotifier {
   Timer? _timer;
   Timer? _restartReconnectDelayTimer;
   Timer? _transientNetworkReconnectTimer;
+  Timer? _transientNetworkReconnectAttemptTimer;
   var _reconnects = 1;
   DateTime? _offlineReconnectStartTime;
   DateTime? _transientNetworkReconnectStartTime;
   bool _transientNetworkReconnectPending = false;
   bool _mobileAppBackgrounded = false;
+  bool _allowMobileBackgroundRecovery = false;
+  bool _hasEverConnected = false;
   bool _viewOnly = false;
   bool _showMyCursor = false;
   WeakReference<FFI> parent;
@@ -1003,6 +1006,15 @@ class FfiModel with ChangeNotifier {
       showWaitUacDialog(sessionId, dialogManager, type);
     } else if (type == 'elevation-error') {
       showElevationError(sessionId, type, title, text, dialogManager);
+    } else if (isMobile &&
+        shouldAutoRecoverTransientMobileNetworkError(
+            type: type,
+            title: title,
+            text: text,
+            hasEverConnected: _hasEverConnected) &&
+        shouldContinueTransientNetworkReconnect()) {
+      scheduleTransientNetworkReconnect(dialogManager, sessionId,
+          reason: 'transport_error');
     } else if (type == 'relay-hint' || type == 'relay-hint2') {
       showRelayHintDialog(sessionId, type, title, text, dialogManager, peerId);
     } else if (text == kMsgboxTextWaitingForImage) {
@@ -1012,12 +1024,6 @@ class FfiModel with ChangeNotifier {
       showPrivacyFailedDialog(
           sessionId, type, title, text, link, hasRetry, dialogManager);
     } else {
-      if (isMobile &&
-          isTransientMobileNetworkError(type: type, title: title, text: text) &&
-          shouldContinueTransientNetworkReconnect()) {
-        scheduleTransientNetworkReconnect(dialogManager, sessionId);
-        return;
-      }
       var hasRetry = evt['hasRetry'] == 'true';
       if (!hasRetry) {
         hasRetry = shouldAutoRetryOnOffline(type, title, text);
@@ -1034,9 +1040,12 @@ class FfiModel with ChangeNotifier {
   void resetTransientNetworkReconnectState() {
     _transientNetworkReconnectTimer?.cancel();
     _transientNetworkReconnectTimer = null;
+    _transientNetworkReconnectAttemptTimer?.cancel();
+    _transientNetworkReconnectAttemptTimer = null;
     _transientNetworkReconnectStartTime = null;
     _transientNetworkReconnectPending = false;
     _mobileAppBackgrounded = false;
+    _allowMobileBackgroundRecovery = false;
   }
 
   bool shouldContinueTransientNetworkReconnect() {
@@ -1047,10 +1056,13 @@ class FfiModel with ChangeNotifier {
   }
 
   void scheduleTransientNetworkReconnect(
-      OverlayDialogManager dialogManager, SessionID sessionId) {
+      OverlayDialogManager dialogManager, SessionID sessionId,
+      {required String reason}) {
     _timer?.cancel();
     _timer = null;
     _transientNetworkReconnectTimer?.cancel();
+    _transientNetworkReconnectAttemptTimer?.cancel();
+    _transientNetworkReconnectAttemptTimer = null;
     _transientNetworkReconnectPending = true;
 
     final delaySeconds =
@@ -1063,36 +1075,100 @@ class FfiModel with ChangeNotifier {
       'peer_id': parent.target?.id ?? '',
       'delay_seconds': scheduledDelaySeconds,
       'backgrounded': _mobileAppBackgrounded,
+      'reason': reason,
     }));
 
     dialogManager.dismissAll();
     dialogManager.showLoading(translate('Connecting...'),
         onCancel: _requestClose);
+    if (_mobileAppBackgrounded && !_allowMobileBackgroundRecovery) {
+      unawaited(DiagnosticSupport.event('mobile_reconnect_deferred', {
+        'session_id': sessionId.toString(),
+        'peer_id': parent.target?.id ?? '',
+        'reason': reason,
+      }));
+      return;
+    }
     _transientNetworkReconnectTimer = Timer(
       Duration(seconds: scheduledDelaySeconds),
       () {
         _transientNetworkReconnectTimer = null;
-        final target = parent.target;
-        if (target == null || target.closed) {
-          resetTransientNetworkReconnectState();
-          return;
-        }
-        unawaited(DiagnosticSupport.event('mobile_reconnect_dispatched', {
-          'session_id': sessionId.toString(),
-          'peer_id': target.id,
-          'source': 'timer',
-        }));
-        reconnect(dialogManager, sessionId, false);
+        _dispatchTransientNetworkReconnect(dialogManager, sessionId,
+            source: 'timer:$reason');
       },
     );
   }
 
-  void onMobileAppPaused() {
+  bool _dispatchTransientNetworkReconnect(
+      OverlayDialogManager dialogManager, SessionID sessionId,
+      {required String source}) {
+    final target = parent.target;
+    if (target == null || target.closed) {
+      resetTransientNetworkReconnectState();
+      return false;
+    }
+    if (!shouldContinueTransientNetworkReconnect()) {
+      _showTransientNetworkReconnectExhausted(
+          dialogManager, sessionId, target.id);
+      return false;
+    }
+
+    _transientNetworkReconnectPending = true;
+    _transientNetworkReconnectTimer?.cancel();
+    _transientNetworkReconnectTimer = null;
+    _transientNetworkReconnectAttemptTimer?.cancel();
+    unawaited(DiagnosticSupport.event('mobile_reconnect_dispatched', {
+      'session_id': sessionId.toString(),
+      'peer_id': target.id,
+      'source': source,
+    }));
+    reconnect(dialogManager, sessionId, false);
+    _transientNetworkReconnectAttemptTimer = Timer(
+      kTransientNetworkReconnectAttemptTimeout,
+      () {
+        _transientNetworkReconnectAttemptTimer = null;
+        final current = parent.target;
+        if (current == null || current.closed) {
+          resetTransientNetworkReconnectState();
+          return;
+        }
+        if (!shouldContinueTransientNetworkReconnect()) {
+          _showTransientNetworkReconnectExhausted(
+              dialogManager, sessionId, current.id);
+          return;
+        }
+        scheduleTransientNetworkReconnect(dialogManager, sessionId,
+            reason: 'attempt_timeout');
+      },
+    );
+    return true;
+  }
+
+  void _showTransientNetworkReconnectExhausted(
+      OverlayDialogManager dialogManager, SessionID sessionId, String peerId) {
+    unawaited(DiagnosticSupport.event('mobile_reconnect_exhausted', {
+      'session_id': sessionId.toString(),
+      'peer_id': peerId,
+    }));
+    resetTransientNetworkReconnectState();
+    unawaited(showRelayHintDialog(sessionId, 'relay-hint2',
+        'Connection Error', 'deadline has elapsed', dialogManager, peerId));
+  }
+
+  void onMobileAppPaused({required bool allowBackgroundRecovery}) {
     _mobileAppBackgrounded = true;
+    _allowMobileBackgroundRecovery = allowBackgroundRecovery;
+    if (_transientNetworkReconnectPending && !allowBackgroundRecovery) {
+      _transientNetworkReconnectTimer?.cancel();
+      _transientNetworkReconnectTimer = null;
+      _transientNetworkReconnectAttemptTimer?.cancel();
+      _transientNetworkReconnectAttemptTimer = null;
+    }
   }
 
   bool onMobileAppResumed() {
     _mobileAppBackgrounded = false;
+    _allowMobileBackgroundRecovery = false;
     final target = parent.target;
     if (!_transientNetworkReconnectPending || target == null || target.closed) {
       unawaited(DiagnosticSupport.event('mobile_resume_reconnect_skipped', {
@@ -1106,22 +1182,76 @@ class FfiModel with ChangeNotifier {
     _transientNetworkReconnectStartTime = DateTime.now();
     _transientNetworkReconnectTimer?.cancel();
     _transientNetworkReconnectTimer = null;
-    unawaited(DiagnosticSupport.event('mobile_reconnect_dispatched', {
-      'session_id': sessionId.toString(),
-      'peer_id': target.id,
-      'source': 'app_resumed',
-    }));
-    reconnect(target.dialogManager, sessionId, false);
-    return true;
+    return _dispatchTransientNetworkReconnect(
+        target.dialogManager, sessionId,
+        source: 'app_resumed');
+  }
+
+  bool beginMobileResumeRecovery() {
+    final target = parent.target;
+    if (target == null || target.closed) return false;
+    _transientNetworkReconnectPending = true;
+    _transientNetworkReconnectStartTime ??= DateTime.now();
+    return _dispatchTransientNetworkReconnect(
+        target.dialogManager, sessionId,
+        source: 'resume_frame_probe_timeout');
   }
 
   void onConnectionReady() {
+    _hasEverConnected = true;
     _transientNetworkReconnectTimer?.cancel();
     _transientNetworkReconnectTimer = null;
-    _transientNetworkReconnectStartTime = null;
-    _transientNetworkReconnectPending = false;
+    _transientNetworkReconnectAttemptTimer?.cancel();
+    _transientNetworkReconnectAttemptTimer = null;
     _timer?.cancel();
     _timer = null;
+    _reconnects = 1;
+    if (isMobile &&
+        parent.target?.connType == ConnType.defaultConn &&
+        _transientNetworkReconnectPending) {
+      final target = parent.target;
+      if (target == null || target.closed) {
+        resetTransientNetworkReconnectState();
+        return;
+      }
+      // A successful handshake is not enough for a resumed desktop session:
+      // keep supervising until the decoder receives a fresh key frame.
+      _transientNetworkReconnectAttemptTimer = Timer(
+        kTransientNetworkFirstFrameTimeout,
+        () {
+          _transientNetworkReconnectAttemptTimer = null;
+          final current = parent.target;
+          if (current == null || current.closed) {
+            resetTransientNetworkReconnectState();
+            return;
+          }
+          if (!shouldContinueTransientNetworkReconnect()) {
+            _showTransientNetworkReconnectExhausted(
+                current.dialogManager, sessionId, current.id);
+            return;
+          }
+          scheduleTransientNetworkReconnect(
+              current.dialogManager, sessionId,
+              reason: 'first_frame_timeout');
+        },
+      );
+      return;
+    }
+    _completeTransientNetworkReconnect();
+  }
+
+  void onMobileFrameHealthy() {
+    if (!_transientNetworkReconnectPending) return;
+    _completeTransientNetworkReconnect();
+  }
+
+  void _completeTransientNetworkReconnect() {
+    _transientNetworkReconnectTimer?.cancel();
+    _transientNetworkReconnectTimer = null;
+    _transientNetworkReconnectAttemptTimer?.cancel();
+    _transientNetworkReconnectAttemptTimer = null;
+    _transientNetworkReconnectStartTime = null;
+    _transientNetworkReconnectPending = false;
     _reconnects = 1;
   }
 

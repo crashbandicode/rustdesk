@@ -26,6 +26,29 @@ void main() {
       );
     });
 
+    test('recognizes an elapsed direct-connect deadline after resume', () {
+      expect(
+        isTransientMobileNetworkError(
+          type: 'relay-hint2',
+          title: 'Connection Error',
+          text: 'deadline has elapsed',
+        ),
+        isTrue,
+      );
+    });
+
+    test('recognizes an unclean WebSocket reset', () {
+      expect(
+        isTransientMobileNetworkError(
+          type: 'error',
+          title: 'Connection Error',
+          text: 'WebSocket protocol error: Connection reset without '
+              'closing handshake',
+        ),
+        isTrue,
+      );
+    });
+
     test('does not retry permanent authentication failures', () {
       expect(
         isTransientMobileNetworkError(
@@ -34,6 +57,55 @@ void main() {
           text: 'Wrong password',
         ),
         isFalse,
+      );
+    });
+
+    test('does not reinterpret an unrelated relay hint', () {
+      expect(
+        isTransientMobileNetworkError(
+          type: 'relay-hint',
+          title: 'Connection Error',
+          text: 'Remote desktop is offline',
+        ),
+        isFalse,
+      );
+    });
+  });
+
+  group('shouldAutoRecoverTransientMobileNetworkError', () {
+    test('keeps the first direct-connect timeout user-visible', () {
+      expect(
+        shouldAutoRecoverTransientMobileNetworkError(
+          type: 'relay-hint2',
+          title: 'Connection Error',
+          text: 'deadline has elapsed',
+          hasEverConnected: false,
+        ),
+        isFalse,
+      );
+    });
+
+    test('automatically repairs a timeout after a working connection', () {
+      expect(
+        shouldAutoRecoverTransientMobileNetworkError(
+          type: 'relay-hint2',
+          title: 'Connection Error',
+          text: 'deadline has elapsed',
+          hasEverConnected: true,
+        ),
+        isTrue,
+      );
+    });
+
+    test('initial DNS restoration failures still retry automatically', () {
+      expect(
+        shouldAutoRecoverTransientMobileNetworkError(
+          type: 'error',
+          title: 'Connection Error',
+          text: 'No address associated with hostname',
+          hasEverConnected: false,
+        ),
+        isTrue,
       );
     });
   });
