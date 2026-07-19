@@ -12,6 +12,16 @@ TextEditingValue _composing(String text, int start) => TextEditingValue(
 
 void main() {
   group('planAndroidImeEdit', () {
+    test('hidden reservoir ends at a word boundary for first-word autocorrect',
+        () {
+      expect(androidImeInitialText.endsWith(' '), isTrue);
+      expect(
+          androidImeInitialText
+              .substring(0, androidImeInitialText.length - 1)
+              .split(''),
+          everyElement(equals('1')));
+    });
+
     test('streams append-only Gboard voice composition incrementally', () {
       final first = planAndroidImeEdit(
         sentValue: _reservoir,

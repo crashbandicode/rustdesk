@@ -1920,6 +1920,10 @@ pub struct LoginConfigHandler {
     pub other_server: Option<(String, String, String)>,
     pub custom_fps: Arc<Mutex<Option<usize>>>,
     pub last_auto_fps: Option<usize>,
+    /// Runtime-only media profile used while an Android outgoing session is
+    /// intentionally retained in the background. This must never be written
+    /// to the peer config: foreground quality is restored on resume.
+    background_video_throttled: bool,
     pub adapter_luid: Option<i64>,
     pub mark_unsupported: Vec<CodecFormat>,
     pub selected_windows_session_id: Option<u32>,
@@ -2478,8 +2482,64 @@ impl LoginConfigHandler {
         if view_only || self.get_toggle_option("disable-clipboard") {
             msg.disable_clipboard = BoolOption::Yes.into();
         }
+        if self.background_video_throttled {
+            Self::apply_background_video_profile(&mut msg);
+            *self.custom_fps.lock().unwrap() = Some(1);
+        }
         msg.supported_decoding = MessageField::some(self.get_supported_decoding());
         Some(msg)
+    }
+
+    fn apply_background_video_profile(option: &mut OptionMessage) {
+        option.custom_fps = 1;
+        option.disable_audio = BoolOption::Yes.into();
+    }
+
+    fn configured_foreground_fps(&self) -> i32 {
+        let allow_more = !crate::using_public_server() || self.direct == Some(true);
+        let mut fps = self
+            .options
+            .get("custom-fps")
+            .and_then(|value| value.parse::<i32>().ok())
+            .unwrap_or(30)
+            .clamp(1, 120);
+        if !allow_more {
+            fps = fps.min(30);
+        }
+        fps
+    }
+
+    fn restore_foreground_video_profile(&self, option: &mut OptionMessage) {
+        option.custom_fps = self.configured_foreground_fps();
+        option.disable_audio = (if self.get_toggle_option("disable-audio") {
+            BoolOption::Yes
+        } else {
+            BoolOption::No
+        })
+        .into();
+        *self.custom_fps.lock().unwrap() = Some(option.custom_fps as usize);
+    }
+
+    /// Build a runtime-only media update for an outgoing Android session.
+    /// Background mode keeps the transport alive at one frame per second with
+    /// audio suspended; foreground mode restores the persisted peer profile
+    /// without saving any temporary values. Image quality is intentionally
+    /// unchanged because the controlled host can share one encoder across
+    /// multiple viewers.
+    pub fn set_background_video_throttled(&mut self, enabled: bool) -> Option<Message> {
+        if self.background_video_throttled == enabled {
+            return None;
+        }
+        self.background_video_throttled = enabled;
+        let mut option = self.get_option_message(false)?;
+        if !enabled {
+            self.restore_foreground_video_profile(&mut option);
+        }
+        let mut misc = Misc::new();
+        misc.set_option(option);
+        let mut message = Message::new();
+        message.set_misc(misc);
+        Some(message)
     }
 
     pub fn get_supported_decoding(&self) -> SupportedDecoding {
@@ -4536,5 +4596,75 @@ mod direct_handshake_fallback_tests {
             "relay.example.test:21117"
         ));
         assert!(!should_retry_direct_handshake_via_relay(true, ""));
+    }
+}
+
+#[cfg(test)]
+mod background_video_profile_tests {
+    use super::*;
+
+    fn option_from_message(message: Message) -> OptionMessage {
+        let Some(message::Union::Misc(misc)) = message.union else {
+            panic!("expected misc message");
+        };
+        let Some(misc::Union::Option(option)) = misc.union else {
+            panic!("expected option message");
+        };
+        option
+    }
+
+    #[test]
+    fn background_profile_is_runtime_only_and_restores_foreground_media() {
+        let mut handler = LoginConfigHandler {
+            conn_type: ConnType::DEFAULT_CONN,
+            ..Default::default()
+        };
+        handler.config.image_quality = "best".to_owned();
+        handler
+            .config
+            .options
+            .insert("custom-fps".to_owned(), "24".to_owned());
+
+        let background = option_from_message(
+            handler
+                .set_background_video_throttled(true)
+                .expect("background profile update"),
+        );
+        assert_eq!(background.image_quality.enum_value(), Ok(ImageQuality::Best));
+        assert_eq!(background.custom_fps, 1);
+        assert_eq!(background.disable_audio.enum_value(), Ok(BoolOption::Yes));
+        assert!(handler.set_background_video_throttled(true).is_none());
+
+        let foreground = option_from_message(
+            handler
+                .set_background_video_throttled(false)
+                .expect("foreground profile update"),
+        );
+        assert_eq!(
+            foreground.image_quality.enum_value(),
+            Ok(ImageQuality::Best)
+        );
+        assert_eq!(foreground.custom_fps, 24);
+        assert_eq!(foreground.disable_audio.enum_value(), Ok(BoolOption::No));
+        assert_eq!(handler.config.image_quality, "best");
+        assert_eq!(
+            handler.config.options.get("custom-fps").map(String::as_str),
+            Some("24")
+        );
+    }
+
+    #[test]
+    fn background_profile_is_reapplied_during_reconnect() {
+        let mut handler = LoginConfigHandler {
+            conn_type: ConnType::DEFAULT_CONN,
+            ..Default::default()
+        };
+        let _ = handler.set_background_video_throttled(true);
+
+        let reconnect = handler
+            .get_option_message(false)
+            .expect("reconnect option message");
+        assert_eq!(reconnect.custom_fps, 1);
+        assert_eq!(reconnect.disable_audio.enum_value(), Ok(BoolOption::Yes));
     }
 }
