@@ -146,6 +146,7 @@ const String kOptionDiagnosticMode = "diagnostic-mode";
 const String kOptionDiagnosticStartedAt = "diagnostic-started-at";
 const String kOptionPauseSynergyOnIncomingSessions =
     "pause-synergy-on-incoming-sessions";
+const String kOptionTerminalImagePaste = "terminal-image-paste";
 const String kOptionI444 = "i444";
 const String kOptionSwapLeftRightMouse = "swap-left-right-mouse";
 const String kOptionCodecPreference = "codec-preference";

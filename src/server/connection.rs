@@ -3049,10 +3049,18 @@ impl Connection {
                 Some(message::Union::Clipboard(cb)) => {
                     if self.should_handle_text_clipboard_message() && self.clipboard_enabled() {
                         #[cfg(not(any(target_os = "android", target_os = "ios")))]
-                        if cb.special_name == KEYBOARD_IMAGE_PASTE_MARKER {
-                            update_clipboard_sync(vec![cb], ClipboardSide::Host);
-                        } else {
-                            update_clipboard(vec![cb], ClipboardSide::Host);
+                        {
+                            let should_sync = cb.special_name == KEYBOARD_IMAGE_PASTE_MARKER;
+                            #[cfg(target_os = "windows")]
+                            let should_sync = should_sync
+                                || super::terminal_image_paste::should_apply_clipboard_synchronously(
+                                    std::slice::from_ref(&cb),
+                                );
+                            if should_sync {
+                                update_clipboard_sync(vec![cb], ClipboardSide::Host);
+                            } else {
+                                update_clipboard(vec![cb], ClipboardSide::Host);
+                            }
                         }
                         // ios as the controlled side is actually not supported for now.
                         // The following code is only used to preserve the logic of handling text clipboard on mobile.
@@ -3080,7 +3088,19 @@ impl Connection {
                 }
                 Some(message::Union::MultiClipboards(_mcb)) => {
                     if self.should_handle_text_clipboard_message() && self.clipboard_enabled() {
-                        #[cfg(not(any(target_os = "android", target_os = "ios")))]
+                        #[cfg(target_os = "windows")]
+                        if super::terminal_image_paste::should_apply_clipboard_synchronously(
+                            &_mcb.clipboards,
+                        ) {
+                            update_clipboard_sync(_mcb.clipboards, ClipboardSide::Host);
+                        } else {
+                            update_clipboard(_mcb.clipboards, ClipboardSide::Host);
+                        }
+                        #[cfg(not(any(
+                            target_os = "windows",
+                            target_os = "android",
+                            target_os = "ios"
+                        )))]
                         update_clipboard(_mcb.clipboards, ClipboardSide::Host);
                         #[cfg(target_os = "android")]
                         crate::clipboard::handle_msg_multi_clipboards(_mcb);

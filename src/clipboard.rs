@@ -238,6 +238,91 @@ pub fn check_clipboard_cm() -> ResultType<MultiClipboards> {
     }
 }
 
+#[cfg(any(target_os = "windows", test))]
+fn clipboard_data_is_image_only(data: &[ClipboardData]) -> bool {
+    let mut has_image = false;
+    for item in data {
+        match item {
+            ClipboardData::Image(_) => has_image = true,
+            ClipboardData::Special((name, _)) if name == WINDOWS_PNG_CLIPBOARD_FORMAT => {
+                has_image = true;
+            }
+            ClipboardData::Special((name, _)) if name == RUSTDESK_CLIPBOARD_OWNER_FORMAT => {}
+            ClipboardData::None => {}
+            _ => return false,
+        }
+    }
+    has_image
+}
+
+/// Read the live Windows clipboard instead of relying on the synchronization cache.
+/// Terminal paste interception is intentionally limited to image-only clipboards so a
+/// rich clipboard that also contains useful text keeps normal Ctrl+V semantics.
+#[cfg(target_os = "windows")]
+pub fn clipboard_has_image_only() -> bool {
+    let mut ctx = CLIPBOARD_CTX.lock().unwrap();
+    if ctx.is_none() {
+        match ClipboardContext::new() {
+            Ok(new_ctx) => *ctx = Some(new_ctx),
+            Err(err) => {
+                log::debug!("Failed to create clipboard context for terminal image paste: {err}");
+                return false;
+            }
+        }
+    }
+    let Some(ctx) = ctx.as_mut() else {
+        return false;
+    };
+    let formats = [
+        ClipboardFormat::Text,
+        ClipboardFormat::Html,
+        ClipboardFormat::Rtf,
+        ClipboardFormat::Special(WINDOWS_PNG_CLIPBOARD_FORMAT),
+        ClipboardFormat::ImagePng,
+        ClipboardFormat::ImageRgba,
+        ClipboardFormat::Special(RUSTDESK_CLIPBOARD_OWNER_FORMAT),
+    ];
+    match ctx.get_formats(&formats) {
+        Ok(data) => clipboard_data_is_image_only(&data),
+        Err(err) => {
+            log::debug!("Failed to inspect clipboard for terminal image paste: {err}");
+            false
+        }
+    }
+}
+
+#[cfg(test)]
+mod terminal_image_clipboard_tests {
+    use super::*;
+
+    #[test]
+    fn recognizes_windows_image_representations() {
+        let data = vec![
+            ClipboardData::Special((WINDOWS_PNG_CLIPBOARD_FORMAT.to_owned(), vec![1, 2, 3])),
+            ClipboardData::Image(arboard::ImageData::rgba(1, 1, vec![0, 0, 0, 255].into())),
+            ClipboardData::Special((RUSTDESK_CLIPBOARD_OWNER_FORMAT.to_owned(), vec![1])),
+        ];
+        assert!(clipboard_data_is_image_only(&data));
+    }
+
+    #[test]
+    fn rejects_rich_clipboard_with_text() {
+        let data = vec![
+            ClipboardData::Text("caption".to_owned()),
+            ClipboardData::Image(arboard::ImageData::rgba(1, 1, vec![0, 0, 0, 255].into())),
+        ];
+        assert!(!clipboard_data_is_image_only(&data));
+    }
+
+    #[test]
+    fn rejects_empty_or_unrelated_clipboards() {
+        assert!(!clipboard_data_is_image_only(&[]));
+        assert!(!clipboard_data_is_image_only(&[ClipboardData::Rtf(
+            "{\\rtf1}".to_owned()
+        )]));
+    }
+}
+
 #[cfg(not(target_os = "android"))]
 fn update_clipboard_(multi_clipboards: Vec<Clipboard>, side: ClipboardSide) {
     let to_update_data = proto::from_multi_clipboards(multi_clipboards);

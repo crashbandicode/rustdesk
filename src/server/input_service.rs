@@ -2241,6 +2241,11 @@ pub fn handle_key_(evt: &KeyEvent) {
         return;
     }
 
+    #[cfg(target_os = "windows")]
+    if super::terminal_image_paste::try_handle(evt) {
+        return;
+    }
+
     #[cfg(not(any(target_os = "android", target_os = "ios")))]
     let mut _lock_mode_handler = None;
     #[cfg(not(any(target_os = "android", target_os = "ios")))]

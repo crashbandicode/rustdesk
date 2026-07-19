@@ -1309,6 +1309,15 @@ class _SafetyState extends State<_Safety> with AutomaticKeepAliveClientMixin {
             kOptionPauseSynergyOnIncomingSessions,
             reverse: false,
             enabled: enabled),
+      if (isWindows)
+        _OptionCheckBox(
+            context,
+            'Enable clipboard image paste in terminal apps (Codex CLI)',
+            kOptionTerminalImagePaste,
+            reverse: false,
+            enabled: enabled,
+            optGetter: () =>
+                bind.mainGetOptionSync(key: kOptionTerminalImagePaste) != 'N'),
       if (bind.mainIsInstalled())
         _OptionCheckBox(context, 'allow-only-conn-window-open-tip',
             'allow-only-conn-window-open',
