@@ -18,6 +18,7 @@ import '../../consts.dart';
 import '../../diagnostics.dart';
 import '../../models/model.dart';
 import '../../models/platform_model.dart';
+import '../outgoing_session_keepalive.dart';
 import '../widgets/deploy_dialog.dart';
 import '../widgets/dialog.dart';
 import 'home_page.dart';
@@ -103,6 +104,7 @@ class _SettingsState extends State<SettingsPage> with WidgetsBindingObserver {
   var _isUsingPublicServer = false;
   var _allowAskForNoteAtEndOfConnection = false;
   var _preventSleepWhileConnected = true;
+  var _keepSessionsConnectedInBackground = false;
   var _diagnosticMode = false;
 
   _SettingsState() {
@@ -146,6 +148,8 @@ class _SettingsState extends State<SettingsPage> with WidgetsBindingObserver {
         mainGetLocalBoolOptionSync(kOptionAllowAskForNoteAtEndOfConnection);
     _preventSleepWhileConnected =
         mainGetLocalBoolOptionSync(kOptionKeepAwakeDuringOutgoingSessions);
+    _keepSessionsConnectedInBackground =
+        mobileOutgoingSessionKeepaliveEnabled();
     _showTerminalExtraKeys =
         mainGetLocalBoolOptionSync(kOptionEnableShowTerminalExtraKeys);
     _diagnosticMode = DiagnosticSupport.enabled;
@@ -858,6 +862,22 @@ class _SettingsState extends State<SettingsPage> with WidgetsBindingObserver {
                     kOptionKeepAwakeDuringOutgoingSessions, v);
                 setState(() {
                   _preventSleepWhileConnected = v;
+                });
+              },
+            ),
+          if (isAndroid && !incomingOnly)
+            SettingsTile.switchTile(
+              title: Text(
+                  translate('Keep remote sessions connected in background')),
+              description: Text(translate(
+                  'Uses an Android foreground service and additional battery while outgoing sessions are open. When off, sessions reconnect after RustDesk resumes.')),
+              initialValue: _keepSessionsConnectedInBackground,
+              onToggle: (value) async {
+                await setMobileOutgoingSessionKeepaliveEnabled(value);
+                final enabled = mobileOutgoingSessionKeepaliveEnabled();
+                if (!mounted) return;
+                setState(() {
+                  _keepSessionsConnectedInBackground = enabled;
                 });
               },
             ),

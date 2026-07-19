@@ -10,6 +10,22 @@ MobileSessionLifecycleTarget _target(String id, List<String> events) {
 }
 
 void main() {
+  test('mobile input lifecycle releases modifiers at focus boundaries', () {
+    final releases = <String>[];
+    final guard = MobileInputLifecycleGuard(
+      active: true,
+      releaseModifiers: releases.add,
+    );
+
+    guard.setActive(false);
+    guard.setActive(false);
+    guard.setActive(true);
+    guard.pause();
+    guard.dispose();
+
+    expect(releases, ['tab_inactive', 'app_paused', 'session_disposed']);
+  });
+
   test('closing one tab requests only its native session once', () {
     final closed = <String>[];
     final coordinator = MobileSessionCloseCoordinator<String>(
