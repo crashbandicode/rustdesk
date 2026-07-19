@@ -222,6 +222,8 @@ const String kOptionKeepAwakeDuringIncomingSessions =
     "keep-awake-during-incoming-sessions";
 const String kOptionKeepAwakeDuringOutgoingSessions =
     "keep-awake-during-outgoing-sessions";
+const String kOptionAllowBackgroundSessionKeepalive =
+    "allow-background-session-keepalive";
 
 const String kOptionShowMobileAction = "showMobileActions";
 

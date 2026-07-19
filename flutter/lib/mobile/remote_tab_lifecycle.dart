@@ -1,6 +1,33 @@
 import 'dart:async';
 
 typedef MobileSessionLifecycleCallback = void Function();
+typedef MobileModifierReleaseCallback = void Function(String reason);
+
+class MobileInputLifecycleGuard {
+  MobileInputLifecycleGuard({
+    required bool active,
+    required MobileModifierReleaseCallback releaseModifiers,
+  })  : _active = active,
+        _releaseModifiers = releaseModifiers;
+
+  final MobileModifierReleaseCallback _releaseModifiers;
+  bool _active;
+
+  bool get active => _active;
+
+  void setActive(bool active) {
+    if (_active == active) return;
+    final wasActive = _active;
+    _active = active;
+    if (wasActive && !active) {
+      _releaseModifiers('tab_inactive');
+    }
+  }
+
+  void pause() => _releaseModifiers('app_paused');
+
+  void dispose() => _releaseModifiers('session_disposed');
+}
 
 class MobileSessionCloseCoordinator<T> {
   MobileSessionCloseCoordinator({required this.onCloseRequested});
