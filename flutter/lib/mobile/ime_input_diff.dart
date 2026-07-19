@@ -1,5 +1,11 @@
 import 'package:flutter/services.dart';
 
+/// Hidden editable text gives Android IMEs enough preceding content to emit a
+/// backspace even when the remote field is empty. The trailing space is never
+/// sent to the peer; it is a word boundary so Gboard composes and autocorrects
+/// the first word instead of treating it as a suffix of the digit reservoir.
+final androidImeInitialText = '${'1' * 1024} ';
+
 /// A remote edit derived from the Android IME's latest editing value.
 class AndroidImeEditPlan {
   const AndroidImeEditPlan({

@@ -508,6 +508,17 @@ impl<T: InvokeUiSession> Session<T> {
         self.send(Data::Message(msg));
     }
 
+    pub fn set_background_video_throttled(&self, enabled: bool) {
+        let msg = self
+            .lc
+            .write()
+            .unwrap()
+            .set_background_video_throttled(enabled);
+        if let Some(msg) = msg {
+            self.send(Data::Message(msg));
+        }
+    }
+
     pub fn get_remember(&self) -> bool {
         self.lc.read().unwrap().remember
     }

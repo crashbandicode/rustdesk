@@ -33,7 +33,7 @@ import '../remote_tab_lifecycle.dart';
 import '../widgets/dialog.dart';
 import '../widgets/custom_scale_widget.dart';
 
-final initText = '1' * 1024;
+final initText = androidImeInitialText;
 
 // Workaround for Android (default input method, Microsoft SwiftKey keyboard) when using physical keyboard.
 // When connecting a physical keyboard, `KeyEvent.physicalKey.usbHidUsage` are wrong is using Microsoft SwiftKey keyboard.
@@ -144,7 +144,7 @@ class _RemotePageState extends State<RemotePage> {
     );
     widget.lifecycleTarget.attach(
       onPaused: _handleAppPaused,
-      onResumed: _handleAppResumed,
+      onResumed: () => unawaited(_handleAppResumed()),
     );
     _ffi.imageModel.setPresentationActive(widget.active);
     _ffi.imageModel.addCallbackOnFrame(_handleIncomingFrame);
@@ -282,14 +282,44 @@ class _RemotePageState extends State<RemotePage> {
     _resumeOverlayTimer?.cancel();
     _awaitingResumeFrame = false;
     _inputLifecycleGuard.pause();
-    _ffi.ffiModel.onMobileAppPaused(
-        allowBackgroundRecovery: mobileOutgoingSessionKeepaliveEnabled());
+    final allowBackgroundRecovery = mobileOutgoingSessionKeepaliveEnabled();
+    if (allowBackgroundRecovery) {
+      unawaited(_setBackgroundVideoThrottled(true));
+    }
+    _ffi.ffiModel
+        .onMobileAppPaused(allowBackgroundRecovery: allowBackgroundRecovery);
     unawaited(DiagnosticSupport.event('mobile_session_lifecycle_applied', {
       'session_id': widget.sessionId.toString(),
       'peer_id': widget.id,
       'state': AppLifecycleState.paused.name,
       'active': widget.active,
+      'background_video_throttled': allowBackgroundRecovery,
     }));
+  }
+
+  Future<void> _setBackgroundVideoThrottled(bool enabled) async {
+    try {
+      await bind.sessionSetBackgroundVideoThrottled(
+        sessionId: sessionId,
+        enabled: enabled,
+      );
+      await DiagnosticSupport.event('mobile_background_video_profile_applied', {
+        'session_id': widget.sessionId.toString(),
+        'peer_id': widget.id,
+        'enabled': enabled,
+        'fps': enabled ? 1 : 'configured',
+        'quality': 'configured',
+        'audio_suspended': enabled,
+      });
+    } catch (error) {
+      debugPrint('Failed to update background video profile: $error');
+      await DiagnosticSupport.event('mobile_background_video_profile_failed', {
+        'session_id': widget.sessionId.toString(),
+        'peer_id': widget.id,
+        'enabled': enabled,
+        'error': error.toString(),
+      });
+    }
   }
 
   void _releaseMobileModifiers(String reason) {
@@ -309,13 +339,18 @@ class _RemotePageState extends State<RemotePage> {
     }));
   }
 
-  void _handleAppResumed() {
+  Future<void> _handleAppResumed() async {
     _resumeOverlayTimer?.cancel();
     if (mounted) {
       setState(() => _awaitingResumeFrame = true);
     } else {
       _awaitingResumeFrame = true;
     }
+    // Restore the persisted foreground media profile before probing or
+    // reconnecting. Otherwise a background reconnect can carry the 1 FPS
+    // throttle into the newly established foreground session.
+    await _setBackgroundVideoThrottled(false);
+    if (!mounted) return;
     if (widget.active) trySyncClipboard();
     final reconnectDispatched = _ffi.ffiModel.onMobileAppResumed();
     unawaited(DiagnosticSupport.event('mobile_session_lifecycle_applied', {
