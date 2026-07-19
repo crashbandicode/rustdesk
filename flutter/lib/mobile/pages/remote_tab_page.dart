@@ -9,6 +9,7 @@ import 'package:flutter_hbb/models/platform_model.dart';
 import 'package:flutter_hbb/models/state_model.dart';
 import 'package:uuid/uuid.dart';
 
+import '../outgoing_session_keepalive.dart';
 import '../remote_tab_lifecycle.dart';
 import 'remote_page.dart';
 
@@ -387,21 +388,8 @@ class _MobileConnectionTabPageState extends State<MobileConnectionTabPage>
   }
 
   void _publishOutgoingSessionCount({int? overrideCount}) {
-    if (!isAndroid) return;
     final count = overrideCount ?? _sessions.length;
-    unawaited(() async {
-      try {
-        await gFFI.invokeMethod('set_outgoing_session_count', count);
-        await DiagnosticSupport.event('mobile_outgoing_service_updated', {
-          'session_count': count,
-        });
-      } catch (error) {
-        await DiagnosticSupport.event('mobile_outgoing_service_failed', {
-          'session_count': count,
-          'error': error.toString(),
-        });
-      }
-    }());
+    unawaited(mobileOutgoingSessionKeepalive.updateSessionCount(count));
   }
 
   void _requestNativeClose(_MobileRemoteSession session,

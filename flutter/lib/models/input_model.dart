@@ -1142,6 +1142,42 @@ class InputModel {
     shift = ctrl = alt = command = false;
   }
 
+  /// Release every modifier at the controlled peer and clear local tracking.
+  ///
+  /// Android can omit a physical key-up when the app is backgrounded, and the
+  /// mobile modifier toolbar intentionally latches its buttons. Session
+  /// lifecycle boundaries must therefore release both sources explicitly.
+  void releaseAllModifiers() {
+    toReleaseKeys.release(handleKeyEvent);
+    toReleaseRawKeys.release(handleRawKeyEvent);
+
+    for (final key in [
+      'Control_L',
+      'Control_R',
+      'Alt_L',
+      'Alt_R',
+      'Shift_L',
+      'Shift_R',
+      'Meta_L',
+      'Meta_R',
+    ]) {
+      bind.sessionInputKey(
+        sessionId: sessionId,
+        name: key,
+        down: false,
+        press: false,
+        alt: false,
+        ctrl: false,
+        shift: false,
+        command: false,
+      );
+    }
+
+    toReleaseKeys.reset();
+    toReleaseRawKeys.reset();
+    resetModifiers();
+  }
+
   /// Modify the given modifier map [evt] based on current modifier key status.
   Map<String, dynamic> modify(Map<String, dynamic> evt) {
     if (ctrl) evt['ctrl'] = 'true';
@@ -1302,35 +1338,7 @@ class InputModel {
   void exitRelativeMouseModeWithKeyRelease() {
     if (!_relativeMouse.enabled.value) return;
 
-    // First, send release events for all modifier keys to the remote.
-    // This ensures the remote doesn't have stuck modifier keys after exiting.
-    // Use press: false, down: false to send key-up events without modifiers attached.
-    final modifiersToRelease = [
-      'Control_L',
-      'Control_R',
-      'Alt_L',
-      'Alt_R',
-      'Shift_L',
-      'Shift_R',
-      'Meta_L', // Command/Super left
-      'Meta_R', // Command/Super right
-    ];
-
-    for (final key in modifiersToRelease) {
-      bind.sessionInputKey(
-        sessionId: sessionId,
-        name: key,
-        down: false,
-        press: false,
-        alt: false,
-        ctrl: false,
-        shift: false,
-        command: false,
-      );
-    }
-
-    // Reset local modifier state
-    resetModifiers();
+    releaseAllModifiers();
 
     // Now exit relative mouse mode
     _relativeMouse.setRelativeMouseMode(false);

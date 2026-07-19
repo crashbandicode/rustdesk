@@ -87,6 +87,7 @@ class _RemotePageState extends State<RemotePage> {
   Timer? _iosKeyboardWorkaroundTimer;
   Timer? _resumeOverlayTimer;
   bool _awaitingResumeFrame = false;
+  late final MobileInputLifecycleGuard _inputLifecycleGuard;
 
   final _blockableOverlayState = BlockableOverlayState();
 
@@ -135,6 +136,10 @@ class _RemotePageState extends State<RemotePage> {
       'active': widget.active,
     }));
     _ffi = FFI(widget.sessionId);
+    _inputLifecycleGuard = MobileInputLifecycleGuard(
+      active: widget.active,
+      releaseModifiers: _releaseMobileModifiers,
+    );
     widget.lifecycleTarget.attach(
       onPaused: _handleAppPaused,
       onResumed: _handleAppResumed,
@@ -204,6 +209,7 @@ class _RemotePageState extends State<RemotePage> {
       'peer_id': widget.id,
       'active': widget.active,
     }));
+    _inputLifecycleGuard.setActive(widget.active);
     _ffi.imageModel.setPresentationActive(widget.active);
     if (widget.active) {
       _physicalFocusNode.requestFocus();
@@ -230,6 +236,7 @@ class _RemotePageState extends State<RemotePage> {
     widget.lifecycleTarget.detach();
     _resumeOverlayTimer?.cancel();
     _ffi.imageModel.removeCallbackOnFrame(_handleIncomingFrame);
+    _inputLifecycleGuard.dispose();
     // A standalone page owns its native close and dispatches it before any async
     // UI cleanup. The multi-tab host owns native session teardown explicitly, so
     // keyed child reconciliation can never close a sibling session by mistake.
@@ -272,12 +279,30 @@ class _RemotePageState extends State<RemotePage> {
   void _handleAppPaused() {
     _resumeOverlayTimer?.cancel();
     _awaitingResumeFrame = false;
+    _inputLifecycleGuard.pause();
     _ffi.ffiModel.onMobileAppPaused();
     unawaited(DiagnosticSupport.event('mobile_session_lifecycle_applied', {
       'session_id': widget.sessionId.toString(),
       'peer_id': widget.id,
       'state': AppLifecycleState.paused.name,
       'active': widget.active,
+    }));
+  }
+
+  void _releaseMobileModifiers(String reason) {
+    final hadCtrl = inputModel.ctrl;
+    final hadAlt = inputModel.alt;
+    final hadShift = inputModel.shift;
+    final hadCommand = inputModel.command;
+    inputModel.releaseAllModifiers();
+    unawaited(DiagnosticSupport.event('mobile_modifiers_released', {
+      'session_id': widget.sessionId.toString(),
+      'peer_id': widget.id,
+      'reason': reason,
+      'had_ctrl': hadCtrl,
+      'had_alt': hadAlt,
+      'had_shift': hadShift,
+      'had_command': hadCommand,
     }));
   }
 
