@@ -50,7 +50,12 @@ class MobileSessionLifecycleTarget {
 
 class MobileTabLifecycleCoordinator {
   MobileTabLifecycleCoordinator({
-    this.resumeStagger = const Duration(milliseconds: 250),
+    // A direct or relay reconnect normally needs substantially longer than
+    // 250 ms to finish ICE/signaling. Keep the selected tab immediate, but do
+    // not make every background tab contend for the same Android network and
+    // decoder resources during that handshake. Selecting a pending tab still
+    // promotes it immediately through [prioritize].
+    this.resumeStagger = const Duration(seconds: 2),
     bool initiallyBackgrounded = false,
   }) : _backgrounded = initiallyBackgrounded;
 
