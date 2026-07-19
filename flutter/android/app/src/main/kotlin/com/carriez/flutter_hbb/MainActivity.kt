@@ -168,6 +168,36 @@ class MainActivity : FlutterActivity() {
                         result.success(false)
                     }
                 }
+                "set_outgoing_session_count" -> {
+                    val sessionCount = call.arguments as? Int
+                    if (sessionCount == null || sessionCount < 0) {
+                        result.error(
+                            "invalid-session-count",
+                            "Outgoing session count must be a non-negative integer",
+                            null
+                        )
+                        return@setMethodCallHandler
+                    }
+                    try {
+                        val serviceIntent = Intent(activity, OutgoingSessionService::class.java)
+                            .putExtra(OutgoingSessionService.EXTRA_SESSION_COUNT, sessionCount)
+                        if (sessionCount == 0) {
+                            stopService(serviceIntent)
+                        } else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                            startForegroundService(serviceIntent)
+                        } else {
+                            startService(serviceIntent)
+                        }
+                        result.success(true)
+                    } catch (e: Exception) {
+                        Log.e(logTag, "Failed to update outgoing session service", e)
+                        result.error(
+                            "outgoing-session-service-failed",
+                            e.message,
+                            null
+                        )
+                    }
+                }
                 "check_permission" -> {
                     if (call.arguments is String) {
                         result.success(XXPermissions.isGranted(context, call.arguments as String))

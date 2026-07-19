@@ -361,12 +361,14 @@ class _MobileConnectionTabPageState extends State<MobileConnectionTabPage>
       },
     );
     WidgetsBinding.instance.addObserver(this);
+    _publishOutgoingSessionCount();
   }
 
   @override
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
     _lifecycleCoordinator.dispose();
+    _publishOutgoingSessionCount(overrideCount: 0);
     final parentMustRestoreGlobalUi = _sessions.length > 1;
     for (final session in _sessions) {
       _requestNativeClose(session, source: 'tab_host_disposed');
@@ -384,6 +386,24 @@ class _MobileConnectionTabPageState extends State<MobileConnectionTabPage>
     super.dispose();
   }
 
+  void _publishOutgoingSessionCount({int? overrideCount}) {
+    if (!isAndroid) return;
+    final count = overrideCount ?? _sessions.length;
+    unawaited(() async {
+      try {
+        await gFFI.invokeMethod('set_outgoing_session_count', count);
+        await DiagnosticSupport.event('mobile_outgoing_service_updated', {
+          'session_count': count,
+        });
+      } catch (error) {
+        await DiagnosticSupport.event('mobile_outgoing_service_failed', {
+          'session_count': count,
+          'error': error.toString(),
+        });
+      }
+    }());
+  }
+
   void _requestNativeClose(_MobileRemoteSession session,
       {required String source}) {
     if (!_closeCoordinator.request(session.sessionId)) return;
@@ -397,6 +417,11 @@ class _MobileConnectionTabPageState extends State<MobileConnectionTabPage>
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
     if (_sessions.isEmpty) return;
+    if (state == AppLifecycleState.resumed) {
+      // Reassert the foreground-service lease in case Android reclaimed the
+      // service while leaving the Flutter activity's task restorable.
+      _publishOutgoingSessionCount();
+    }
     final targets =
         _sessions.map((session) => session.lifecycleTarget).toList();
     final selected = _sessions[_selectedIndex].lifecycleTarget;
@@ -460,6 +485,7 @@ class _MobileConnectionTabPageState extends State<MobileConnectionTabPage>
       ));
       _selectedIndex = _sessions.length - 1;
     });
+    _publishOutgoingSessionCount();
   }
 
   void _closeSession(SessionID sessionId) {
@@ -480,6 +506,7 @@ class _MobileConnectionTabPageState extends State<MobileConnectionTabPage>
         }
       }
     });
+    _publishOutgoingSessionCount();
 
     if (closesLastSession) {
       stateGlobal.isInMainPage = true;

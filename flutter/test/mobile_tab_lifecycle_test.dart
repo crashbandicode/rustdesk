@@ -45,11 +45,11 @@ void main() {
     expect(coordinator.resumeAll(targets, selected: selected), isTrue);
     expect(events, ['resume:selected']);
 
-    await tester.pump(const Duration(milliseconds: 249));
+    await tester.pump(const Duration(milliseconds: 1999));
     expect(events, ['resume:selected']);
     await tester.pump(const Duration(milliseconds: 1));
     expect(events, ['resume:selected', 'resume:first']);
-    await tester.pump(const Duration(milliseconds: 250));
+    await tester.pump(const Duration(seconds: 2));
     expect(events, ['resume:selected', 'resume:first', 'resume:third']);
 
     coordinator.dispose();

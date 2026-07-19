@@ -110,6 +110,13 @@
             android:foregroundServiceType="connectedDevice|mediaProjection" />
 
         <service
+            android:name=".OutgoingSessionService"
+            android:enabled="true"
+            android:exported="false"
+            android:foregroundServiceType="connectedDevice"
+            android:stopWithTask="true" />
+
+        <service
             android:name=".FloatingWindowService"
             android:enabled="true" />
 
