@@ -4060,14 +4060,41 @@ void earlyAssert() {
   assert('\1' == '1');
 }
 
-void checkUpdate() {
-  if (isWeb) {
-    return;
-  }
-  if (!shouldCheckForSoftwareUpdates(
+const _softwareUpdateResumeRefreshInterval = Duration(minutes: 2);
+final _softwareUpdateRefreshClock = Stopwatch()..start();
+final _softwareUpdateRefreshGate = SoftwareUpdateRefreshGate(
+  minimumInterval: _softwareUpdateResumeRefreshInterval,
+);
+
+bool _canCheckForSoftwareUpdates() {
+  if (isWeb) return false;
+  return shouldCheckForSoftwareUpdates(
     isCustomClient: bind.isCustomClient(),
     buildIdentity: bind.mainGetBuildIdentitySync(),
-  )) {
+  );
+}
+
+void _requestSoftwareUpdateRefresh() {
+  if (!_canCheckForSoftwareUpdates() ||
+      !_softwareUpdateRefreshGate
+          .shouldRequest(_softwareUpdateRefreshClock.elapsed)) {
+    return;
+  }
+  bind.mainGetSoftwareUpdateUrl();
+}
+
+/// Refreshes the update channel after Android returns to the foreground.
+///
+/// The startup check is process-local, so without this hook an app kept alive
+/// across a release cannot discover it until the process is killed. The shared
+/// gate keeps frequent app switching from polling GitHub repeatedly.
+void refreshSoftwareUpdateOnResume() {
+  if (!isAndroid || stateGlobal.updateUrl.value.isNotEmpty) return;
+  _requestSoftwareUpdateRefresh();
+}
+
+void checkUpdate() {
+  if (!_canCheckForSoftwareUpdates()) {
     // Clear any in-memory result emitted before the fork policy was evaluated.
     stateGlobal.updateUrl.value = '';
     return;
@@ -4077,9 +4104,13 @@ void checkUpdate() {
       (Map<String, dynamic> evt) async {
     if (evt['url'] is String) {
       final updateUrl = evt['url'] as String;
+      final previousUpdateUrl = stateGlobal.updateUrl.value;
       stateGlobal.updateUrl.value = updateUrl;
       if (isAndroid) {
-        final apkUrl = githubForkAndroidApkUrl(updateUrl);
+        final apkUrl = newGithubForkAndroidApkUrl(
+          previousReleasePageUrl: previousUpdateUrl,
+          releasePageUrl: updateUrl,
+        );
         if (apkUrl != null) {
           // Android verifies the package/signing certificate, downloads it,
           // then opens the system installer. The final confirmation is an
@@ -4096,9 +4127,7 @@ void checkUpdate() {
       }
     }
   });
-  Timer(const Duration(seconds: 1), () async {
-    bind.mainGetSoftwareUpdateUrl();
-  });
+  Timer(const Duration(seconds: 1), _requestSoftwareUpdateRefresh);
 }
 
 // https://github.com/flutter/flutter/issues/153560#issuecomment-2497160535
