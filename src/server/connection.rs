@@ -8,10 +8,10 @@ use super::{input_service::*, *};
 use crate::clipboard::try_empty_clipboard_files;
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
 use crate::clipboard::{update_clipboard, update_clipboard_sync, ClipboardSide};
-#[cfg(not(any(target_os = "android", target_os = "ios")))]
-use crate::common::KEYBOARD_IMAGE_PASTE_MARKER;
 #[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
 use crate::clipboard_file::*;
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
+use crate::common::KEYBOARD_IMAGE_PASTE_MARKER;
 #[cfg(target_os = "android")]
 use crate::keyboard::client::map_key_to_control_key;
 #[cfg(target_os = "linux")]
@@ -209,6 +209,163 @@ enum MessageInput {
     #[cfg(all(feature = "flutter", feature = "plugin_framework"))]
     #[cfg(not(any(target_os = "android", target_os = "ios")))]
     BlockOffPlugin(String),
+}
+
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum RemotePressedKey {
+    Control(i32),
+    Chr(u32),
+    Win2WinHotkey(u32),
+}
+
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
+#[derive(Default)]
+struct RemotePressedKeys {
+    // A connection normally holds only a few keys. A Vec preserves press order
+    // so disconnect cleanup can release the most recent ordinary key before
+    // its shortcut modifiers without adding a global cross-session key map.
+    keys: Vec<((i32, RemotePressedKey), KeyEvent)>,
+}
+
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
+impl RemotePressedKeys {
+    fn key_id(event: &KeyEvent) -> Option<(i32, RemotePressedKey)> {
+        let key = match event.union.as_ref()? {
+            key_event::Union::ControlKey(key) => RemotePressedKey::Control(key.value()),
+            key_event::Union::Chr(key) => RemotePressedKey::Chr(*key),
+            key_event::Union::Win2winHotkey(key) => RemotePressedKey::Win2WinHotkey(*key),
+            // Unicode and sequence messages are text operations, not held
+            // physical keys. Replaying either on disconnect would type twice.
+            key_event::Union::Unicode(_) | key_event::Union::Seq(_) => return None,
+            _ => return None,
+        };
+        Some((event.mode.value(), key))
+    }
+
+    fn observe(&mut self, event: &KeyEvent, press: bool) {
+        if press {
+            return;
+        }
+        let Some(id) = Self::key_id(event) else {
+            return;
+        };
+        if event.down {
+            if let Some((_, stored)) = self.keys.iter_mut().find(|(stored_id, _)| *stored_id == id)
+            {
+                *stored = event.clone();
+            } else {
+                self.keys.push((id, event.clone()));
+            }
+        } else if let Some(index) = self.keys.iter().position(|(stored_id, _)| *stored_id == id) {
+            self.keys.remove(index);
+        }
+    }
+
+    fn take_releases(&mut self) -> Vec<KeyEvent> {
+        let (modifiers, ordinary): (Vec<_>, Vec<_>) = self
+            .keys
+            .drain(..)
+            .partition(|(_, event)| crate::common::is_modifier(event));
+        ordinary
+            .into_iter()
+            .rev()
+            .chain(modifiers.into_iter().rev())
+            .map(|(_, mut event)| {
+                event.down = false;
+                event.press = false;
+                event.modifiers.clear();
+                event
+            })
+            .collect()
+    }
+}
+
+#[cfg(all(test, not(any(target_os = "android", target_os = "ios"))))]
+mod remote_pressed_keys_tests {
+    use super::*;
+
+    fn control(key: ControlKey, down: bool) -> KeyEvent {
+        let mut event = KeyEvent {
+            down,
+            ..Default::default()
+        };
+        event.set_control_key(key);
+        event
+    }
+
+    fn chr(key: char, down: bool) -> KeyEvent {
+        let mut event = KeyEvent {
+            down,
+            ..Default::default()
+        };
+        event.set_chr(key as u32);
+        event
+    }
+
+    #[test]
+    fn releases_abandoned_shortcut_in_reverse_press_order() {
+        let mut keys = RemotePressedKeys::default();
+        keys.observe(&control(ControlKey::Control, true), false);
+        keys.observe(&control(ControlKey::Shift, true), false);
+        keys.observe(&chr('a', true), false);
+
+        let releases = keys.take_releases();
+        assert_eq!(releases.len(), 3);
+        assert_eq!(
+            RemotePressedKeys::key_id(&releases[0]).unwrap().1,
+            RemotePressedKey::Chr('a' as u32)
+        );
+        assert_eq!(
+            RemotePressedKeys::key_id(&releases[1]).unwrap().1,
+            RemotePressedKey::Control(ControlKey::Shift.value())
+        );
+        assert_eq!(
+            RemotePressedKeys::key_id(&releases[2]).unwrap().1,
+            RemotePressedKey::Control(ControlKey::Control.value())
+        );
+        assert!(releases.iter().all(|event| !event.down && !event.press));
+    }
+
+    #[test]
+    fn matching_key_up_and_click_events_leave_nothing_to_release() {
+        let mut keys = RemotePressedKeys::default();
+        keys.observe(&chr('a', true), false);
+        keys.observe(&chr('a', false), false);
+        keys.observe(&chr('b', false), true);
+
+        assert!(keys.take_releases().is_empty());
+    }
+
+    #[test]
+    fn ordinary_keys_release_before_modifiers_regardless_of_press_order() {
+        let mut keys = RemotePressedKeys::default();
+        keys.observe(&chr('a', true), false);
+        keys.observe(&control(ControlKey::Shift, true), false);
+
+        let releases = keys.take_releases();
+        assert_eq!(
+            RemotePressedKeys::key_id(&releases[0]).unwrap().1,
+            RemotePressedKey::Chr('a' as u32)
+        );
+        assert_eq!(
+            RemotePressedKeys::key_id(&releases[1]).unwrap().1,
+            RemotePressedKey::Control(ControlKey::Shift.value())
+        );
+    }
+
+    #[test]
+    fn text_sequences_are_not_treated_as_held_keys() {
+        let mut event = KeyEvent {
+            down: true,
+            ..Default::default()
+        };
+        event.set_seq("hello".to_owned());
+        let mut keys = RemotePressedKeys::default();
+        keys.observe(&event, false);
+
+        assert!(keys.take_releases().is_empty());
+    }
 }
 
 #[derive(Clone, Debug, Hash, Eq, PartialEq)]
@@ -1161,6 +1318,7 @@ impl Connection {
     #[cfg(not(any(target_os = "android", target_os = "ios")))]
     fn handle_input(receiver: std_mpsc::Receiver<MessageInput>, tx: Sender) {
         let mut block_input_mode = false;
+        let mut pressed_keys = RemotePressedKeys::default();
         #[cfg(any(target_os = "windows", target_os = "macos"))]
         {
             rdev::set_mouse_extra_info(enigo::ENIGO_INPUT_EXTRA_VALUE);
@@ -1182,6 +1340,7 @@ impl Connection {
                         );
                     }
                     MessageInput::Key((mut msg, press)) => {
+                        pressed_keys.observe(&msg, press);
                         // Set the press state to false, use `down` only in `handle_key()`.
                         msg.press = false;
                         if press {
@@ -1256,6 +1415,16 @@ impl Connection {
                         break;
                     }
                 }
+            }
+        }
+        let releases = pressed_keys.take_releases();
+        if !releases.is_empty() {
+            log::info!(
+                "Releasing {} held remote key(s) after input connection closed",
+                releases.len()
+            );
+            for release in releases {
+                handle_key(&release);
             }
         }
         #[cfg(target_os = "linux")]

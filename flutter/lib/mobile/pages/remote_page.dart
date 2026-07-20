@@ -140,7 +140,7 @@ class _RemotePageState extends State<RemotePage> {
     _ffi = FFI(widget.sessionId);
     _inputLifecycleGuard = MobileInputLifecycleGuard(
       active: widget.active,
-      releaseModifiers: _releaseMobileModifiers,
+      releaseModifiers: _releaseMobileInput,
     );
     widget.lifecycleTarget.attach(
       onPaused: _handleAppPaused,
@@ -322,12 +322,12 @@ class _RemotePageState extends State<RemotePage> {
     }
   }
 
-  void _releaseMobileModifiers(String reason) {
+  void _releaseMobileInput(String reason) {
     final hadCtrl = inputModel.ctrl;
     final hadAlt = inputModel.alt;
     final hadShift = inputModel.shift;
     final hadCommand = inputModel.command;
-    inputModel.releaseAllModifiers();
+    final releasedKeyCount = inputModel.releaseAllPressedKeys();
     unawaited(DiagnosticSupport.event('mobile_modifiers_released', {
       'session_id': widget.sessionId.toString(),
       'peer_id': widget.id,
@@ -336,6 +336,18 @@ class _RemotePageState extends State<RemotePage> {
       'had_alt': hadAlt,
       'had_shift': hadShift,
       'had_command': hadCommand,
+      'released_key_count': releasedKeyCount,
+    }));
+  }
+
+  void _releaseMobilePhysicalInput(String reason) {
+    final releasedKeyCount = inputModel.releaseTrackedPhysicalKeys();
+    if (releasedKeyCount == 0) return;
+    unawaited(DiagnosticSupport.event('mobile_physical_keys_released', {
+      'session_id': widget.sessionId.toString(),
+      'peer_id': widget.id,
+      'reason': reason,
+      'released_key_count': releasedKeyCount,
     }));
   }
 
@@ -573,6 +585,11 @@ class _RemotePageState extends State<RemotePage> {
     if (!plan.hasRemoteEdit) {
       return;
     }
+
+    // Android may move input from the physical-key focus node into the IME
+    // without delivering every key-up. Physical keys are not intentional IME
+    // modifiers; toolbar latches are tracked separately and remain active.
+    _releaseMobilePhysicalInput('ime_edit');
 
     bind.sessionApplyInputEdit(
       sessionId: sessionId,
@@ -898,6 +915,11 @@ class _RemotePageState extends State<RemotePage> {
       child: _ffi.ffiModel.pi.isSet.isTrue
           ? RawKeyFocusScope(
               focusNode: _physicalFocusNode,
+              onFocusChange: (focused) {
+                if (!focused) {
+                  _releaseMobilePhysicalInput('keyboard_focus_lost');
+                }
+              },
               inputModel: inputModel,
               child: child)
           : child,
@@ -1367,17 +1389,17 @@ class _KeyHelpToolsState extends State<KeyHelpTools> {
     final isLinux = pi.platform == kPeerPlatformLinux;
     final modifiers = <Widget>[
       wrap('Ctrl ', () {
-        setState(() => inputModel.ctrl = !inputModel.ctrl);
-      }, active: inputModel.ctrl),
+        setState(() => inputModel.toolbarCtrl = !inputModel.toolbarCtrl);
+      }, active: inputModel.toolbarCtrl),
       wrap(' Alt ', () {
-        setState(() => inputModel.alt = !inputModel.alt);
-      }, active: inputModel.alt),
+        setState(() => inputModel.toolbarAlt = !inputModel.toolbarAlt);
+      }, active: inputModel.toolbarAlt),
       wrap('Shift', () {
-        setState(() => inputModel.shift = !inputModel.shift);
-      }, active: inputModel.shift),
+        setState(() => inputModel.toolbarShift = !inputModel.toolbarShift);
+      }, active: inputModel.toolbarShift),
       wrap(isMac ? ' Cmd ' : ' Win ', () {
-        setState(() => inputModel.command = !inputModel.command);
-      }, active: inputModel.command),
+        setState(() => inputModel.toolbarCommand = !inputModel.toolbarCommand);
+      }, active: inputModel.toolbarCommand),
     ];
     final keys = <Widget>[
       wrap(
@@ -1870,17 +1892,18 @@ TTextMenu? getResolutionMenu(FFI ffi, String id) {
 }
 
 void sendPrompt(FFI ffi, bool isMac, String key) {
-  final old = isMac ? ffi.inputModel.command : ffi.inputModel.ctrl;
+  final old =
+      isMac ? ffi.inputModel.toolbarCommand : ffi.inputModel.toolbarCtrl;
   if (isMac) {
-    ffi.inputModel.command = true;
+    ffi.inputModel.toolbarCommand = true;
   } else {
-    ffi.inputModel.ctrl = true;
+    ffi.inputModel.toolbarCtrl = true;
   }
   ffi.inputModel.inputKey(key);
   if (isMac) {
-    ffi.inputModel.command = old;
+    ffi.inputModel.toolbarCommand = old;
   } else {
-    ffi.inputModel.ctrl = old;
+    ffi.inputModel.toolbarCtrl = old;
   }
 }
 
