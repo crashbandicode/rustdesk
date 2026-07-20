@@ -467,6 +467,13 @@ class _AppState extends State<App> with WidgetsBindingObserver {
     _updateOrientation();
   }
 
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed) {
+      refreshSoftwareUpdateOnResume();
+    }
+  }
+
   void _updateOrientation() {
     if (isDesktop) return;
 
