@@ -7284,6 +7284,7 @@ dependencies = [
  "cidr-utils",
  "clipboard",
  "clipboard-master",
+ "clipboard-win",
  "cocoa 0.24.1",
  "core-foundation 0.9.4",
  "core-graphics 0.22.3",
