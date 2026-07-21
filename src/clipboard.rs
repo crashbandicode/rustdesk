@@ -534,7 +534,33 @@ impl ClipboardContext {
 
     fn set(&mut self, data: &[ClipboardData]) -> ResultType<()> {
         let _lock = ARBOARD_MTX.lock().unwrap();
+        // Consume any staged image path with this clipboard write so a later
+        // text-only update cannot publish a stale CF_HDROP.
+        #[cfg(target_os = "windows")]
+        let staged_path = crate::clipboard_win_image_file::take_pending_hdrop_path();
         self.inner.set_formats(data)?;
+        #[cfg(target_os = "windows")]
+        {
+            if let Some(path) = staged_path {
+                let has_image = data.iter().any(|item| match item {
+                    ClipboardData::Image(_) => true,
+                    ClipboardData::Special((name, _)) if name == WINDOWS_PNG_CLIPBOARD_FORMAT => {
+                        true
+                    }
+                    _ => false,
+                });
+                if has_image {
+                    let path_str = path.to_string_lossy().into_owned();
+                    if let Err(err) =
+                        crate::clipboard_win_image_file::publish_clipboard_hdrop(&[path_str])
+                    {
+                        log::warn!(
+                            "Failed to publish CF_HDROP for Cursor image paste compatibility: {err}"
+                        );
+                    }
+                }
+            }
+        }
         Ok(())
     }
 
@@ -761,13 +787,19 @@ mod proto {
         Some((width as usize, height as usize, rgba.into_raw()))
     }
 
-    /// Publish both Chromium's registered `PNG` format and arboard's RGBA image
-    /// formats (`image/png` plus CF_DIBV5). Different Electron applications choose
-    /// different Windows clipboard formats; offering all three avoids empty
-    /// attachments without changing normal clipboard-image synchronization.
+    /// Publish Chromium's registered `PNG` and arboard's RGBA formats (`image/png`
+    /// plus CF_DIBV5), and stage a temp PNG for Windows CF_HDROP. Cursor's agent
+    /// composer paste path reads `clipboardData.files`, which Chromium fills from
+    /// CF_HDROP rather than bitmap/`PNG` formats alone.
     #[cfg(any(target_os = "windows", test))]
     fn windows_png_clipboard_data(data: Vec<u8>) -> Option<Vec<ClipboardData>> {
         let (width, height, rgba) = bounded_png_to_rgba(&data)?;
+        if let Err(err) = crate::clipboard_win_image_file::stage_clipboard_png(&data) {
+            crate::clipboard_win_image_file::clear_pending_hdrop_path();
+            hbb_common::log::warn!(
+                "Failed to stage clipboard PNG for Cursor CF_HDROP compatibility: {err}"
+            );
+        }
         Some(vec![
             ClipboardData::Special((super::WINDOWS_PNG_CLIPBOARD_FORMAT.to_owned(), data)),
             ClipboardData::Image(arboard::ImageData::rgba(width, height, rgba.into())),
@@ -985,7 +1017,9 @@ mod proto {
 
         #[test]
         fn synchronized_png_offers_registered_png_before_native_bitmap() {
-            let formats = windows_png_clipboard_data(encode_png(2, 3)).unwrap();
+            crate::clipboard_win_image_file::clear_pending_hdrop_path();
+            let png = encode_png(2, 3);
+            let formats = windows_png_clipboard_data(png.clone()).unwrap();
             assert_eq!(formats.len(), 2);
             assert!(matches!(
                 &formats[0],
@@ -993,6 +1027,13 @@ mod proto {
                     if name == super::super::WINDOWS_PNG_CLIPBOARD_FORMAT && !data.is_empty()
             ));
             assert!(matches!(&formats[1], ClipboardData::Image(_)));
+            let path = crate::clipboard_win_image_file::take_pending_hdrop_path()
+                .expect("staged clipboard PNG for CF_HDROP");
+            assert!(
+                crate::clipboard_win_image_file::is_rustdesk_staged_clipboard_image_path(&path)
+            );
+            assert_eq!(std::fs::read(&path).unwrap(), png);
+            let _ = std::fs::remove_file(path);
         }
 
         #[test]
@@ -1029,6 +1070,7 @@ mod proto {
 
         #[test]
         fn normal_desktop_png_expands_to_windows_png_and_native_bitmap() {
+            crate::clipboard_win_image_file::clear_pending_hdrop_path();
             let png = encode_png(2, 3);
             let formats = from_multi_clipboards(vec![Clipboard {
                 content: png.clone().into(),
@@ -1043,6 +1085,10 @@ mod proto {
                     if name == super::super::WINDOWS_PNG_CLIPBOARD_FORMAT && data == &png
             ));
             assert!(matches!(&formats[1], ClipboardData::Image(_)));
+            let path = crate::clipboard_win_image_file::take_pending_hdrop_path()
+                .expect("staged clipboard PNG for CF_HDROP");
+            assert_eq!(std::fs::read(&path).unwrap(), png);
+            let _ = std::fs::remove_file(path);
         }
 
         #[test]

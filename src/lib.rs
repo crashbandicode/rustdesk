@@ -35,6 +35,8 @@ use common::*;
 mod auth_2fa;
 #[cfg(not(target_os = "ios"))]
 mod clipboard;
+#[cfg(any(target_os = "windows", test))]
+mod clipboard_win_image_file;
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
 pub mod core_main;
 mod custom_server;
