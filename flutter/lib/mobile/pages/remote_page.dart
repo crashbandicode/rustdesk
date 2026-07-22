@@ -283,9 +283,9 @@ class _RemotePageState extends State<RemotePage> {
     _awaitingResumeFrame = false;
     _inputLifecycleGuard.pause();
     final allowBackgroundRecovery = mobileOutgoingSessionKeepaliveEnabled();
-    if (allowBackgroundRecovery) {
-      unawaited(_setBackgroundVideoThrottled(true));
-    }
+    // Always tell the host the viewer is backgrounded so Synergy can resume
+    // even when keepalive (and thus video throttle recovery) is disabled.
+    unawaited(_setBackgroundVideoThrottled(true));
     _ffi.ffiModel
         .onMobileAppPaused(allowBackgroundRecovery: allowBackgroundRecovery);
     unawaited(DiagnosticSupport.event('mobile_session_lifecycle_applied', {
@@ -293,7 +293,8 @@ class _RemotePageState extends State<RemotePage> {
       'peer_id': widget.id,
       'state': AppLifecycleState.paused.name,
       'active': widget.active,
-      'background_video_throttled': allowBackgroundRecovery,
+      'background_video_throttled': true,
+      'keepalive_enabled': allowBackgroundRecovery,
     }));
   }
 
