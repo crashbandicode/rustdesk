@@ -4848,6 +4848,19 @@ impl Connection {
                 }
             }
         }
+        if let Ok(q) = o.viewer_backgrounded.enum_value() {
+            if q != BoolOption::NotSet {
+                #[cfg(windows)]
+                {
+                    raii::AuthedConnID::set_viewer_backgrounded(
+                        self.inner.id(),
+                        q == BoolOption::Yes,
+                    );
+                }
+                #[cfg(not(windows))]
+                let _ = q;
+            }
+        }
     }
 
     async fn turn_on_privacy(&mut self, impl_key: String) {
@@ -5659,6 +5672,7 @@ impl Connection {
             && Self::is_bool_option_not_set(option.disable_camera)
             && Self::is_bool_option_not_set(option.terminal_persistent)
             && Self::is_bool_option_not_set(option.show_my_cursor)
+            && Self::is_bool_option_not_set(option.viewer_backgrounded)
     }
 
     fn is_connection_housekeeping_message(msg: &Message) -> bool {
@@ -5793,7 +5807,8 @@ impl Connection {
             && Self::is_bool_option_not_set(option.follow_remote_window)
             && Self::is_bool_option_not_set(option.disable_camera)
             && Self::is_bool_option_not_set(option.terminal_persistent)
-            && Self::is_bool_option_not_set(option.show_my_cursor))
+            && Self::is_bool_option_not_set(option.show_my_cursor)
+            && Self::is_bool_option_not_set(option.viewer_backgrounded))
     }
 
     fn option_has_non_terminal_login_field(option: &OptionMessage) -> bool {
@@ -5813,11 +5828,13 @@ impl Connection {
             || !Self::is_bool_option_not_set(option.follow_remote_window)
             || !Self::is_bool_option_not_set(option.disable_camera)
             || !Self::is_bool_option_not_set(option.show_my_cursor)
+            || !Self::is_bool_option_not_set(option.viewer_backgrounded)
     }
 
     fn option_has_any_field(option: &OptionMessage) -> bool {
         Self::option_has_non_terminal_login_field(option)
             || !Self::is_bool_option_not_set(option.terminal_persistent)
+            || !Self::is_bool_option_not_set(option.viewer_backgrounded)
     }
 
     fn is_bool_option_not_set(option: hbb_common::protobuf::EnumOrUnknown<BoolOption>) -> bool {
@@ -6642,6 +6659,9 @@ pub struct AuthedConn {
     pub session_key: SessionKey,
     pub sender: mpsc::UnboundedSender<Data>,
     pub printer: bool,
+    /// Controller reported itself as backgrounded/minimized.
+    /// Synergy pause uses active remote viewers only (!viewer_backgrounded).
+    pub viewer_backgrounded: bool,
 }
 
 mod raii {
@@ -6685,6 +6705,7 @@ mod raii {
                 session_key,
                 sender,
                 printer,
+                viewer_backgrounded: false,
             });
             Self::check_wake_lock();
             #[cfg(windows)]
@@ -6728,12 +6749,31 @@ mod raii {
 
         #[cfg(windows)]
         fn remote_conn_count() -> usize {
+            // Active remote viewers: authenticated remotes that are not
+            // backgrounded on the controller. Used for Synergy pause/restore.
             AUTHED_CONNS
                 .lock()
                 .unwrap()
                 .iter()
-                .filter(|c| c.conn_type == AuthConnType::Remote)
+                .filter(|c| c.conn_type == AuthConnType::Remote && !c.viewer_backgrounded)
                 .count()
+        }
+
+        #[cfg(windows)]
+        pub fn set_viewer_backgrounded(conn_id: i32, backgrounded: bool) {
+            let mut changed = false;
+            {
+                let mut lock = AUTHED_CONNS.lock().unwrap();
+                if let Some(c) = lock.iter_mut().find(|c| c.conn_id == conn_id) {
+                    if c.viewer_backgrounded != backgrounded {
+                        c.viewer_backgrounded = backgrounded;
+                        changed = true;
+                    }
+                }
+            }
+            if changed {
+                Self::notify_synergy();
+            }
         }
 
         #[cfg(windows)]

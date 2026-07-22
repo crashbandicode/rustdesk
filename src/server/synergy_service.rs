@@ -46,7 +46,9 @@ static WORKER: OnceLock<Sender<Event>> = OnceLock::new();
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Event {
     Initialize,
-    RemoteCount(usize),
+    /// Count of authenticated remote sessions that are actively viewing
+    /// (not backgrounded/minimized on the controller).
+    ActiveViewerCount(usize),
     OptionChanged(usize),
     RestoreDeadline,
 }
@@ -61,7 +63,7 @@ enum Action {
 
 #[derive(Default)]
 struct Policy {
-    remote_count: usize,
+    active_viewers: usize,
     restore_scheduled: bool,
 }
 
@@ -75,9 +77,9 @@ impl Policy {
                     Action::None
                 }
             }
-            Event::RemoteCount(count) => {
-                let previous = self.remote_count;
-                self.remote_count = count;
+            Event::ActiveViewerCount(count) => {
+                let previous = self.active_viewers;
+                self.active_viewers = count;
                 if count > 0 {
                     self.restore_scheduled = false;
                     if enabled {
@@ -103,7 +105,7 @@ impl Policy {
                 }
             }
             Event::OptionChanged(count) => {
-                self.remote_count = count;
+                self.active_viewers = count;
                 if !enabled && owns_pause {
                     self.restore_scheduled = false;
                     Action::Restore
@@ -118,9 +120,9 @@ impl Policy {
             }
             Event::RestoreDeadline => {
                 self.restore_scheduled = false;
-                if self.remote_count == 0 && owns_pause {
+                if self.active_viewers == 0 && owns_pause {
                     Action::Restore
-                } else if self.remote_count > 0 && enabled {
+                } else if self.active_viewers > 0 && enabled {
                     Action::Pause
                 } else {
                     Action::None
@@ -185,7 +187,7 @@ impl Worker {
                 self.restore_deadline = None;
                 let result = restore_core_if_owned();
                 let retry =
-                    result.is_err() && owns_pause() && (!enabled || self.policy.remote_count == 0);
+                    result.is_err() && owns_pause() && (!enabled || self.policy.active_viewers == 0);
                 self.record_result("start", result);
                 if retry {
                     self.policy.restore_scheduled = true;
@@ -215,7 +217,9 @@ pub fn initialize() {
 }
 
 pub fn remote_count_changed(count: usize) {
-    send(Event::RemoteCount(count));
+    // Historical name: callers now pass the active-viewer count (remote
+    // sessions that are not viewer-backgrounded).
+    send(Event::ActiveViewerCount(count));
 }
 
 pub fn option_changed() {
@@ -227,7 +231,9 @@ fn current_remote_count() -> usize {
         .lock()
         .unwrap()
         .iter()
-        .filter(|connection| connection.conn_type == super::AuthConnType::Remote)
+        .filter(|connection| {
+            connection.conn_type == super::AuthConnType::Remote && !connection.viewer_backgrounded
+        })
         .count()
 }
 
@@ -272,11 +278,11 @@ fn pause_core_if_running() -> ResultType<()> {
     if newly_owned {
         create_ownership_marker()?;
     }
-    log::info!("Stopping the Synergy core for an authenticated remote session");
+    log::info!("Stopping the Synergy core for an active remote viewer");
     record_event(
         "stop",
         "requested",
-        "authenticated remote session active; keeping Synergy tray alive",
+        "active remote viewer present; keeping Synergy tray alive",
     );
     if let Err(err) = send_core_ipc_command("stop", "ok") {
         if newly_owned {
@@ -584,11 +590,11 @@ mod tests {
     fn only_remote_sessions_request_a_pause() {
         let mut policy = Policy::default();
         assert_eq!(
-            policy.transition(Event::RemoteCount(0), true, false),
+            policy.transition(Event::ActiveViewerCount(0), true, false),
             Action::None
         );
         assert_eq!(
-            policy.transition(Event::RemoteCount(1), true, false),
+            policy.transition(Event::ActiveViewerCount(1), true, false),
             Action::Pause
         );
     }
@@ -596,13 +602,13 @@ mod tests {
     #[test]
     fn multiple_sessions_restore_only_after_the_last_disconnects() {
         let mut policy = Policy::default();
-        policy.transition(Event::RemoteCount(2), true, false);
+        policy.transition(Event::ActiveViewerCount(2), true, false);
         assert_eq!(
-            policy.transition(Event::RemoteCount(1), true, true),
+            policy.transition(Event::ActiveViewerCount(1), true, true),
             Action::Pause
         );
         assert_eq!(
-            policy.transition(Event::RemoteCount(0), true, true),
+            policy.transition(Event::ActiveViewerCount(0), true, true),
             Action::ScheduleRestore
         );
         assert_eq!(
@@ -614,11 +620,11 @@ mod tests {
     #[test]
     fn reconnect_cancels_a_scheduled_restore() {
         let mut policy = Policy::default();
-        policy.transition(Event::RemoteCount(1), true, false);
-        policy.transition(Event::RemoteCount(0), true, true);
+        policy.transition(Event::ActiveViewerCount(1), true, false);
+        policy.transition(Event::ActiveViewerCount(0), true, true);
         assert!(policy.restore_scheduled);
         assert_eq!(
-            policy.transition(Event::RemoteCount(1), true, true),
+            policy.transition(Event::ActiveViewerCount(1), true, true),
             Action::Pause
         );
         assert!(!policy.restore_scheduled);
@@ -627,7 +633,7 @@ mod tests {
     #[test]
     fn disabling_the_option_restores_an_owned_pause_immediately() {
         let mut policy = Policy::default();
-        policy.transition(Event::RemoteCount(1), true, false);
+        policy.transition(Event::ActiveViewerCount(1), true, false);
         assert_eq!(
             policy.transition(Event::OptionChanged(1), false, true),
             Action::Restore
@@ -645,6 +651,49 @@ mod tests {
             policy.transition(Event::Initialize, true, true),
             Action::Restore
         );
+    }
+
+    #[test]
+    fn backgrounding_the_last_active_viewer_schedules_restore() {
+        let mut policy = Policy::default();
+        assert_eq!(
+            policy.transition(Event::ActiveViewerCount(1), true, false),
+            Action::Pause
+        );
+        // Session remains connected, but the controller is backgrounded.
+        assert_eq!(
+            policy.transition(Event::ActiveViewerCount(0), true, true),
+            Action::ScheduleRestore
+        );
+        assert!(policy.restore_scheduled);
+        assert_eq!(
+            policy.transition(Event::RestoreDeadline, true, true),
+            Action::Restore
+        );
+    }
+
+    #[test]
+    fn foregrounding_a_backgrounded_viewer_pauses_again() {
+        let mut policy = Policy::default();
+        policy.transition(Event::ActiveViewerCount(1), true, false);
+        policy.transition(Event::ActiveViewerCount(0), true, true);
+        assert!(policy.restore_scheduled);
+        assert_eq!(
+            policy.transition(Event::ActiveViewerCount(1), true, true),
+            Action::Pause
+        );
+        assert!(!policy.restore_scheduled);
+    }
+
+    #[test]
+    fn one_active_viewer_keeps_synergy_paused_while_another_is_backgrounded() {
+        let mut policy = Policy::default();
+        policy.transition(Event::ActiveViewerCount(2), true, false);
+        assert_eq!(
+            policy.transition(Event::ActiveViewerCount(1), true, true),
+            Action::Pause
+        );
+        assert!(!policy.restore_scheduled);
     }
 
     #[test]

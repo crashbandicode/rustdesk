@@ -2493,6 +2493,7 @@ impl LoginConfigHandler {
     fn apply_background_video_profile(option: &mut OptionMessage) {
         option.custom_fps = 1;
         option.disable_audio = BoolOption::Yes.into();
+        option.viewer_backgrounded = BoolOption::Yes.into();
     }
 
     fn configured_foreground_fps(&self) -> i32 {
@@ -2517,15 +2518,17 @@ impl LoginConfigHandler {
             BoolOption::No
         })
         .into();
+        option.viewer_backgrounded = BoolOption::No.into();
         *self.custom_fps.lock().unwrap() = Some(option.custom_fps as usize);
     }
 
     /// Build a runtime-only media update for an outgoing Android session.
     /// Background mode keeps the transport alive at one frame per second with
-    /// audio suspended; foreground mode restores the persisted peer profile
-    /// without saving any temporary values. Image quality is intentionally
-    /// unchanged because the controlled host can share one encoder across
-    /// multiple viewers.
+    /// audio suspended and marks the viewer as backgrounded (so Windows hosts
+    /// can restore Synergy); foreground mode restores the persisted peer
+    /// profile without saving any temporary values. Image quality is
+    /// intentionally unchanged because the controlled host can share one
+    /// encoder across multiple viewers.
     pub fn set_background_video_throttled(&mut self, enabled: bool) -> Option<Message> {
         if self.background_video_throttled == enabled {
             return None;
@@ -4633,6 +4636,10 @@ mod background_video_profile_tests {
         assert_eq!(background.image_quality.enum_value(), Ok(ImageQuality::Best));
         assert_eq!(background.custom_fps, 1);
         assert_eq!(background.disable_audio.enum_value(), Ok(BoolOption::Yes));
+        assert_eq!(
+            background.viewer_backgrounded.enum_value(),
+            Ok(BoolOption::Yes)
+        );
         assert!(handler.set_background_video_throttled(true).is_none());
 
         let foreground = option_from_message(
@@ -4646,6 +4653,10 @@ mod background_video_profile_tests {
         );
         assert_eq!(foreground.custom_fps, 24);
         assert_eq!(foreground.disable_audio.enum_value(), Ok(BoolOption::No));
+        assert_eq!(
+            foreground.viewer_backgrounded.enum_value(),
+            Ok(BoolOption::No)
+        );
         assert_eq!(handler.config.image_quality, "best");
         assert_eq!(
             handler.config.options.get("custom-fps").map(String::as_str),
@@ -4666,5 +4677,9 @@ mod background_video_profile_tests {
             .expect("reconnect option message");
         assert_eq!(reconnect.custom_fps, 1);
         assert_eq!(reconnect.disable_audio.enum_value(), Ok(BoolOption::Yes));
+        assert_eq!(
+            reconnect.viewer_backgrounded.enum_value(),
+            Ok(BoolOption::Yes)
+        );
     }
 }
