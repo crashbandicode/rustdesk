@@ -180,3 +180,17 @@ Please ensure that you run these commands from the root of the RustDesk reposito
 
 ![TCP Tunneling](https://github.com/rustdesk/rustdesk/assets/28412477/78e8708f-e87e-4570-8373-1360033ea6c5)
 
+
+## Fork additions (crashbandicode)
+
+This repository tracks [rustdesk/rustdesk](https://github.com/rustdesk/rustdesk) and adds a small set of deployment-oriented features used by the signed `crashbandicode/rustdesk` releases:
+
+- **LAN / NetBird ICE**: host candidates work without depending on public STUN first, with physical LAN preferred over VPN/overlay routes when both are available.
+- **Windows clipboard**: sync registered `PNG` images, and publish `CF_HDROP` staging so Chromium/Cursor `clipboardData.files` paste works (terminal image paste unchanged).
+- **Synergy coexistence (Windows)**: optional pause of Synergy during active remote viewing, with graceful core stop/restore; Android minimize/background restores Synergy while the session stays connected.
+- **Android session resilience**: coordinated multi-tab resume, optional background keepalive with 1 FPS throttle, IME/rich-input fixes, and update checks refreshed on app resume.
+- **Input cleanup**: release phantom remote modifier chords when the mobile app backgrounds or the session ends.
+- **Fork updater / CI**: signed Windows + Android `ice-build` releases with checksum-verified GitHub updates for this fork.
+- **Diagnostics**: optional bounded support capture/export for connection and mobile lifecycle events.
+
+Upstream RustDesk behavior remains the default when these options are left off.
