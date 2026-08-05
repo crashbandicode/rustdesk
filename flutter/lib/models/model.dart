@@ -3327,7 +3327,7 @@ class CursorModel with ChangeNotifier {
 
   set blockEvents(bool v) => _blockEvents = v;
 
-  keyHelpToolsVisibilityChanged(Rect? rect, bool keyboardIsVisible) {
+  keyHelpToolsVisibilityChanged(Rect? rect) {
     _keyHelpToolsRect = rect;
     if (rect == null) {
       _lastIsBlocked = false;
@@ -3337,15 +3337,9 @@ class CursorModel with ChangeNotifier {
       // `lastIsBlocked` will be set when the cursor is moving or touch somewhere else.
       _lastIsBlocked = true;
     }
-    if (isMobile && _lastKeyboardIsVisible != keyboardIsVisible) {
-      if (keyboardIsVisible) {
-        parent.target?.canvasModel.saveMobileOffsetBeforeSoftKeyboard();
-        parent.target?.canvasModel.mobileFocusCanvasCursor();
-        parent.target?.canvasModel.isMobileCanvasChanged = false;
-      } else {
-        parent.target?.canvasModel.restoreMobileOffsetAfterSoftKeyboard();
-      }
-    }
+  }
+
+  void softKeyboardVisibilityChanged(bool keyboardIsVisible) {
     _lastKeyboardIsVisible = keyboardIsVisible;
   }
 

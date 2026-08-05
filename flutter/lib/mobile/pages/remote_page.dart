@@ -27,6 +27,7 @@ import '../../models/platform_model.dart';
 import '../../utils/image.dart';
 import '../ime_input_diff.dart';
 import '../keyboard_image_paste.dart';
+import '../mobile_keyboard_viewport.dart';
 import '../native_android_ime.dart';
 import '../outgoing_session_keepalive.dart';
 import '../remote_tab_lifecycle.dart';
@@ -90,6 +91,7 @@ class _RemotePageState extends State<RemotePage> {
   Timer? _resumeOverlayTimer;
   bool _awaitingResumeFrame = false;
   late final MobileInputLifecycleGuard _inputLifecycleGuard;
+  late final MobileKeyboardViewportGuard _keyboardViewportGuard;
 
   final _blockableOverlayState = BlockableOverlayState();
 
@@ -141,6 +143,14 @@ class _RemotePageState extends State<RemotePage> {
     _inputLifecycleGuard = MobileInputLifecycleGuard(
       active: widget.active,
       releaseModifiers: _releaseMobileInput,
+    );
+    _keyboardViewportGuard = MobileKeyboardViewportGuard(
+      onAdjust: () {
+        _ffi.canvasModel.saveMobileOffsetBeforeSoftKeyboard();
+        _ffi.canvasModel.mobileFocusCanvasCursor();
+        _ffi.canvasModel.isMobileCanvasChanged = false;
+      },
+      onRestore: _ffi.canvasModel.restoreMobileOffsetAfterSoftKeyboard,
     );
     widget.lifecycleTarget.attach(
       onPaused: _handleAppPaused,
@@ -213,6 +223,7 @@ class _RemotePageState extends State<RemotePage> {
     }));
     _inputLifecycleGuard.setActive(widget.active);
     _ffi.imageModel.setPresentationActive(widget.active);
+    _updateKeyboardViewport(keyboardVisibilityController.isVisible);
     if (widget.active) {
       _physicalFocusNode.requestFocus();
       if (_ffi.ffiModel.pi.isSet.value) {
@@ -239,6 +250,7 @@ class _RemotePageState extends State<RemotePage> {
     _resumeOverlayTimer?.cancel();
     _ffi.imageModel.removeCallbackOnFrame(_handleIncomingFrame);
     _inputLifecycleGuard.dispose();
+    _keyboardViewportGuard.dispose();
     // A standalone page owns its native close and dispatches it before any async
     // UI cleanup. The multi-tab host owns native session teardown explicitly, so
     // keyed child reconciliation can never close a sibling session by mistake.
@@ -482,6 +494,7 @@ class _RemotePageState extends State<RemotePage> {
       );
 
   void onSoftKeyboardChanged(bool visible) {
+    _updateKeyboardViewport(visible);
     if (!visible) {
       SystemChrome.setEnabledSystemUIMode(SystemUiMode.manual, overlays: []);
       // [pi.version.isNotEmpty] -> check ready or not, avoid login without soft-keyboard
@@ -516,6 +529,16 @@ class _RemotePageState extends State<RemotePage> {
     }
     // update for Scaffold
     setState(() {});
+  }
+
+  void _updateKeyboardViewport(bool keyboardVisible) {
+    final shouldAdjust = keyboardVisible && _showEdit && widget.active;
+    _ffi.cursorModel.softKeyboardVisibilityChanged(shouldAdjust);
+    _keyboardViewportGuard.update(
+      keyboardVisible: keyboardVisible,
+      remoteEditorVisible: _showEdit,
+      sessionActive: widget.active,
+    );
   }
 
   void _handleIOSSoftKeyboardInput(String newValue) {
@@ -1365,8 +1388,7 @@ class _KeyHelpToolsState extends State<KeyHelpTools> {
       final size = renderObject.size;
       Offset pos = renderObject.localToGlobal(Offset.zero);
       _ffi.cursorModel.keyHelpToolsVisibilityChanged(
-          Rect.fromLTWH(pos.dx, pos.dy, size.width, size.height),
-          widget.keyboardIsVisible);
+          Rect.fromLTWH(pos.dx, pos.dy, size.width, size.height));
     }
   }
 
@@ -1378,8 +1400,7 @@ class _KeyHelpToolsState extends State<KeyHelpTools> {
         inputModel.command;
 
     if (!_pin && !hasModifierOn && !widget.requestShow) {
-      _ffi.cursorModel
-          .keyHelpToolsVisibilityChanged(null, widget.keyboardIsVisible);
+      _ffi.cursorModel.keyHelpToolsVisibilityChanged(null);
       return Offstage();
     }
     final size = MediaQuery.of(context).size;
