@@ -54,29 +54,23 @@ class RdClipboardManager(
             return null
         }
         val description = clipData.description
-        var mimeType: String? = null
-        for (i in 0 until description.mimeTypeCount) {
-            val candidate = description.getMimeType(i)
-            if (ClipDescription.compareMimeTypes(candidate, "image/*")) {
-                mimeType = candidate
-                break
-            }
-        }
+        val advertisedMimeTypes = (0 until description.mimeTypeCount)
+            .map(description::getMimeType)
         val item = clipData.getItemAt(0)
         val uri = item.uri ?: item.intent?.data ?: return null
-        val resolvedMimeType = context.contentResolver.getType(uri) ?: mimeType ?: return null
-        if (!ClipDescription.compareMimeTypes(resolvedMimeType, "image/*")) {
-            return null
-        }
+        val resolvedMimeType = selectImageMimeType(
+            context.contentResolver.getType(uri),
+            advertisedMimeTypes
+        ) ?: return null
         return readImageUri(uri, resolvedMimeType, maxBytes)
     }
 
     /** Resolve a keyboard-provided content URI when Flutter did not include bytes. */
     fun readImageUri(uri: Uri, mimeType: String, maxBytes: Int): Map<String, Any>? {
-        val actualMimeType = context.contentResolver.getType(uri) ?: mimeType
-        if (!ClipDescription.compareMimeTypes(actualMimeType, "image/*")) {
-            return null
-        }
+        val actualMimeType = selectImageMimeType(
+            context.contentResolver.getType(uri),
+            listOf(mimeType)
+        ) ?: return null
         val bytes = context.contentResolver.openInputStream(uri)?.use { input ->
             val output = ByteArrayOutputStream()
             val buffer = ByteArray(64 * 1024)
