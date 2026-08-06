@@ -44,6 +44,7 @@ import '../mobile/remote_tab_lifecycle.dart';
 import '../utils/image.dart' as img;
 import '../common/widgets/dialog.dart';
 import 'input_model.dart';
+import 'mobile_mouse_pan.dart';
 import 'platform_model.dart';
 import 'package:flutter_hbb/utils/scale.dart';
 
@@ -3529,63 +3530,39 @@ class CursorModel with ChangeNotifier {
     dx /= scale;
     dy /= scale;
     final r = getVisibleRect();
-    var cx = r.center.dx;
-    var cy = r.center.dy;
-    var tryMoveCanvasX = false;
     final displayRect = parent.target?.ffiModel.rect;
-    if (dx > 0) {
-      final maxCanvasCanMove = _displayOriginX +
-          (displayRect?.width ?? 1280) -
-          r.right.roundToDouble();
-      tryMoveCanvasX = _x + dx > cx && maxCanvasCanMove > 0;
-      if (tryMoveCanvasX) {
-        dx = min(dx, maxCanvasCanMove);
-      } else {
-        final maxCursorCanMove = r.right - _x;
-        dx = min(dx, maxCursorCanMove);
-      }
-    } else if (dx < 0) {
-      final maxCanvasCanMove = _displayOriginX - r.left.roundToDouble();
-      tryMoveCanvasX = _x + dx < cx && maxCanvasCanMove < 0;
-      if (tryMoveCanvasX) {
-        dx = max(dx, maxCanvasCanMove);
-      } else {
-        final maxCursorCanMove = r.left - _x;
-        dx = max(dx, maxCursorCanMove);
-      }
-    }
-    var tryMoveCanvasY = false;
-    if (dy > 0) {
-      final mayCanvasCanMove = _displayOriginY +
-          (displayRect?.height ?? 720) -
-          r.bottom.roundToDouble();
-      tryMoveCanvasY = _y + dy > cy && mayCanvasCanMove > 0;
-      if (tryMoveCanvasY) {
-        dy = min(dy, mayCanvasCanMove);
-      } else {
-        final mayCursorCanMove = r.bottom - _y;
-        dy = min(dy, mayCursorCanMove);
-      }
-    } else if (dy < 0) {
-      final mayCanvasCanMove = _displayOriginY - r.top.roundToDouble();
-      tryMoveCanvasY = _y + dy < cy && mayCanvasCanMove < 0;
-      if (tryMoveCanvasY) {
-        dy = max(dy, mayCanvasCanMove);
-      } else {
-        final mayCursorCanMove = r.top - _y;
-        dy = max(dy, mayCursorCanMove);
-      }
+    final xPlan = planMobileMousePanAxis(
+      delta: dx,
+      pointerPosition: _x,
+      visibleStart: r.left,
+      visibleEnd: r.right,
+      displayStart: _displayOriginX,
+      displayEnd: _displayOriginX + (displayRect?.width ?? 1280),
+    );
+    final yPlan = planMobileMousePanAxis(
+      delta: dy,
+      pointerPosition: _y,
+      visibleStart: r.top,
+      visibleEnd: r.bottom,
+      displayStart: _displayOriginY,
+      displayEnd: _displayOriginY + (displayRect?.height ?? 720),
+    );
+    dx = xPlan.pointerDelta;
+    dy = yPlan.pointerDelta;
+
+    if (dx == 0 &&
+        dy == 0 &&
+        xPlan.canvasDelta == 0 &&
+        yPlan.canvasDelta == 0) {
+      return;
     }
 
-    if (dx == 0 && dy == 0) return;
-
-    Point<double>? newPos;
     final rect = parent.target?.ffiModel.rect;
     if (rect == null) {
       // unreachable
       return;
     }
-    newPos = InputModel.getPointInRemoteRect(
+    final point = InputModel.getPointInRemoteRect(
         false,
         parent.target?.ffiModel.pi.platform,
         kPointerEventKindMouse,
@@ -3594,21 +3571,27 @@ class CursorModel with ChangeNotifier {
         _y + dy,
         rect,
         buttons: kPrimaryButton);
-    if (newPos == null) {
+    if (point == null && xPlan.canvasDelta == 0 && yPlan.canvasDelta == 0) {
       return;
     }
-    dx = newPos.x - _x;
-    dy = newPos.y - _y;
+    // At a remote corner both requested pointer coordinates can be out of
+    // range, causing getPointInRemoteRect() to return null. Keep the pointer at
+    // its clamped edge while still consuming the drag in the canvas.
+    final newPos = point ?? Point<double>(_x, _y);
+    final pointerDx = newPos.x - _x;
+    final pointerDy = newPos.y - _y;
     _x = newPos.x;
     _y = newPos.y;
-    if (tryMoveCanvasX && dx != 0) {
-      parent.target?.canvasModel.panX(-dx * scale);
+    if (xPlan.canvasDelta != 0) {
+      parent.target?.canvasModel.panX(-xPlan.canvasDelta * scale);
     }
-    if (tryMoveCanvasY && dy != 0) {
-      parent.target?.canvasModel.panY(-dy * scale);
+    if (yPlan.canvasDelta != 0) {
+      parent.target?.canvasModel.panY(-yPlan.canvasDelta * scale);
     }
 
-    parent.target?.inputModel.moveMouse(_x, _y);
+    if (pointerDx != 0 || pointerDy != 0) {
+      parent.target?.inputModel.moveMouse(_x, _y);
+    }
     notifyListeners();
   }
 

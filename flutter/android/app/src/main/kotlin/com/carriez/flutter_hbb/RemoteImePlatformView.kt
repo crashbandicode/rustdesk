@@ -1,6 +1,5 @@
 package com.carriez.flutter_hbb
 
-import android.content.ClipDescription
 import android.content.Context
 import android.graphics.Color
 import android.text.Editable
@@ -114,19 +113,18 @@ private class RemoteImePlatformView(
         if (clip.itemCount == 0) return payload
         val item = clip.getItemAt(0)
         val uri = item.uri ?: item.intent?.data ?: return payload
-        var mimeType: String? = null
-        for (i in 0 until clip.description.mimeTypeCount) {
-            val candidate = clip.description.getMimeType(i)
-            if (ClipDescription.compareMimeTypes(candidate, "image/*")) {
-                mimeType = candidate
-                break
-            }
-        }
-        val resolvedMimeType = editText.context.contentResolver.getType(uri)
-            ?: mimeType
-            ?: return payload
-        if (!ClipDescription.compareMimeTypes(resolvedMimeType, "image/*")) {
-            return payload
+        val advertisedMimeTypes = (0 until clip.description.mimeTypeCount)
+            .map(clip.description::getMimeType)
+        val resolvedMimeType = selectImageMimeType(
+            editText.context.contentResolver.getType(uri),
+            advertisedMimeTypes
+        )
+        if (resolvedMimeType == null) {
+            channel.invokeMethod(
+                "image_error",
+                mapOf("message" to "Gboard did not provide a supported image type")
+            )
+            return null
         }
 
         // Retain the ContentInfoCompat object in this closure so Android keeps URI read
