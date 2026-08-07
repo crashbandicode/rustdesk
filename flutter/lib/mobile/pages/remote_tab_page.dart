@@ -9,6 +9,7 @@ import 'package:flutter_hbb/models/platform_model.dart';
 import 'package:flutter_hbb/models/state_model.dart';
 import 'package:uuid/uuid.dart';
 
+import '../mobile_peer_label.dart';
 import '../outgoing_session_keepalive.dart';
 import '../remote_tab_lifecycle.dart';
 import 'remote_page.dart';
@@ -65,12 +66,12 @@ class _MobileConnectionRequest {
 
 enum _MobileConnectionPickerSource { addressBook, recent, manual }
 
-String _peerDisplayName(Peer peer) {
-  if (peer.alias.isNotEmpty) return peer.alias;
-  if (peer.hostname.isNotEmpty) return peer.hostname;
-  if (peer.username.isNotEmpty) return peer.username;
-  return peer.id;
-}
+MobilePeerLabelData _peerLabelData(Peer peer) => (
+      id: peer.id,
+      alias: peer.alias,
+      hostname: peer.hostname,
+      username: peer.username,
+    );
 
 List<Peer> _deduplicatePeers(Iterable<Peer> source, {bool sort = false}) {
   final peersById = <String, Peer>{};
@@ -83,8 +84,8 @@ List<Peer> _deduplicatePeers(Iterable<Peer> source, {bool sort = false}) {
   }
   final peers = peersById.values.toList();
   if (sort) {
-    peers.sort((left, right) =>
-        _peerDisplayName(left).compareTo(_peerDisplayName(right)));
+    peers.sort((left, right) => mobilePeerDisplayName(_peerLabelData(left))
+        .compareTo(mobilePeerDisplayName(_peerLabelData(right))));
   }
   return peers;
 }
@@ -318,7 +319,7 @@ class _ConnectionPeerLabel extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final name = _peerDisplayName(peer);
+    final name = mobilePeerDisplayName(_peerLabelData(peer));
     return Column(
       mainAxisSize: MainAxisSize.min,
       crossAxisAlignment: CrossAxisAlignment.start,
@@ -340,6 +341,7 @@ class _MobileConnectionTabPageState extends State<MobileConnectionTabPage>
   final List<_MobileRemoteSession> _sessions = [];
   late final MobileTabLifecycleCoordinator _lifecycleCoordinator;
   late final MobileSessionCloseCoordinator<SessionID> _closeCoordinator;
+  final String _addressBookListenerKey = Uuid().v4();
   int _selectedIndex = 0;
 
   @override
@@ -361,6 +363,10 @@ class _MobileConnectionTabPageState extends State<MobileConnectionTabPage>
         unawaited(bind.sessionClose(sessionId: sessionId));
       },
     );
+    gFFI.abModel.addPeerUpdateListener(
+      _addressBookListenerKey,
+      _refreshAddressBookLabels,
+    );
     WidgetsBinding.instance.addObserver(this);
     _publishOutgoingSessionCount();
   }
@@ -368,6 +374,7 @@ class _MobileConnectionTabPageState extends State<MobileConnectionTabPage>
   @override
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
+    gFFI.abModel.removePeerUpdateListener(_addressBookListenerKey);
     _lifecycleCoordinator.dispose();
     _publishOutgoingSessionCount(overrideCount: 0);
     final parentMustRestoreGlobalUi = _sessions.length > 1;
@@ -385,6 +392,10 @@ class _MobileConnectionTabPageState extends State<MobileConnectionTabPage>
           overlays: SystemUiOverlay.values));
     }
     super.dispose();
+  }
+
+  void _refreshAddressBookLabels() {
+    if (mounted) setState(() {});
   }
 
   void _publishOutgoingSessionCount({int? overrideCount}) {
@@ -588,6 +599,8 @@ class _MobileConnectionTabPageState extends State<MobileConnectionTabPage>
   }
 
   Widget _buildTabStrip() {
+    final addressBookPeers =
+        gFFI.abModel.allPeers().map(_peerLabelData).toList(growable: false);
     return SizedBox(
       height: 44,
       child: ColoredBox(
@@ -601,6 +614,10 @@ class _MobileConnectionTabPageState extends State<MobileConnectionTabPage>
                 itemBuilder: (context, index) {
                   final session = _sessions[index];
                   final selected = index == _selectedIndex;
+                  final label = mobileAddressBookPeerLabel(
+                    session.id,
+                    addressBookPeers,
+                  );
                   return InkWell(
                     onTap: () => _selectSession(index),
                     child: Container(
@@ -626,7 +643,7 @@ class _MobileConnectionTabPageState extends State<MobileConnectionTabPage>
                           ConstrainedBox(
                             constraints: const BoxConstraints(maxWidth: 94),
                             child: Text(
-                              session.id,
+                              label,
                               overflow: TextOverflow.ellipsis,
                               style: const TextStyle(color: Colors.white),
                             ),
