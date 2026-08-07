@@ -2,9 +2,11 @@ package com.carriez.flutter_hbb
 
 import android.content.Context
 import android.graphics.Color
+import android.os.Bundle
 import android.text.Editable
 import android.text.InputType
 import android.text.TextWatcher
+import android.util.Log
 import android.view.View
 import android.view.inputmethod.BaseInputConnection
 import android.view.inputmethod.EditorInfo
@@ -16,6 +18,7 @@ import androidx.core.view.ContentInfoCompat
 import androidx.core.view.ViewCompat
 import androidx.core.view.inputmethod.EditorInfoCompat
 import androidx.core.view.inputmethod.InputConnectionCompat
+import androidx.core.view.inputmethod.InputContentInfoCompat
 import io.flutter.plugin.common.BinaryMessenger
 import io.flutter.plugin.common.MethodChannel
 import io.flutter.plugin.common.StandardMessageCodec
@@ -25,6 +28,7 @@ import kotlin.concurrent.thread
 
 private const val REMOTE_IME_VIEW_TYPE = "rustdesk/remote-ime"
 private const val MAX_IMAGE_BYTES = 16 * 1024 * 1024
+private const val LOG_TAG = "RemoteImePlatformView"
 
 class RemoteImeViewFactory(private val messenger: BinaryMessenger) :
     PlatformViewFactory(StandardMessageCodec.INSTANCE) {
@@ -51,7 +55,13 @@ private class RemoteImePlatformView(
     private var disposed = false
 
     init {
-        editText.initialize(initialText, ::emitEditingState, ::handleRichContent)
+        editText.initialize(
+            initialText,
+            ::emitEditingState,
+            ::handleRichContent,
+            ::handleCommittedContent,
+            ::handleClipboardImagePaste
+        )
         channel.setMethodCallHandler { call, result ->
             when (call.method) {
                 "show" -> {
@@ -115,10 +125,7 @@ private class RemoteImePlatformView(
         val uri = item.uri ?: item.intent?.data ?: return payload
         val advertisedMimeTypes = (0 until clip.description.mimeTypeCount)
             .map(clip.description::getMimeType)
-        val resolvedMimeType = selectImageMimeType(
-            editText.context.contentResolver.getType(uri),
-            advertisedMimeTypes
-        )
+        val resolvedMimeType = selectImageMimeType(resolveMimeType(uri), advertisedMimeTypes)
         if (resolvedMimeType == null) {
             channel.invokeMethod(
                 "image_error",
@@ -127,40 +134,126 @@ private class RemoteImePlatformView(
             return null
         }
 
-        // Retain the ContentInfoCompat object in this closure so Android keeps URI read
-        // permission alive until the background read is complete.
-        val retainedPayload = payload
-        thread(name = "rustdesk-ime-image") {
-            val image = try {
-                retainedPayload.clip.itemCount // keep the permission-holding payload referenced
-                MainActivity.rdClipboardManager?.readImageUri(
-                    uri,
-                    resolvedMimeType,
-                    MAX_IMAGE_BYTES
-                )
-            } catch (_: Exception) {
-                null
+        scheduleImageRead(uri, resolvedMimeType, "receive-content", retain = {
+            // Retain the ContentInfoCompat object until the asynchronous read finishes.
+            payload.clip.itemCount
+        })
+        return null
+    }
+
+    private fun handleCommittedContent(
+        content: InputContentInfoCompat,
+        flags: Int,
+        opts: Bundle?
+    ): Boolean {
+        val advertisedMimeTypes = (0 until content.description.mimeTypeCount)
+            .map(content.description::getMimeType)
+        val resolvedMimeType = selectImageMimeType(
+            resolveMimeType(content.contentUri),
+            advertisedMimeTypes
+        ) ?: return false
+
+        val permissionRequested =
+            flags and InputConnectionCompat.INPUT_CONTENT_GRANT_READ_URI_PERMISSION != 0
+        if (permissionRequested) {
+            try {
+                content.requestPermission()
+            } catch (error: Exception) {
+                Log.w(LOG_TAG, "Unable to acquire IME content permission", error)
+                emitImageError("Gboard did not grant access to the pasted image")
+                return true
             }
-            editText.post {
-                if (!disposed) {
-                    if (image == null) {
-                        channel.invokeMethod(
-                            "image_error",
-                            mapOf("message" to "Unable to read Gboard image content")
-                        )
-                    } else {
-                        channel.invokeMethod("image_content", image)
-                    }
+        }
+
+        // Keep both the content object and optional metadata alive while its temporary URI
+        // permission is in use. releasePermission() must run after, not before, the read.
+        scheduleImageRead(content.contentUri, resolvedMimeType, "commit-content", {
+            content.description.mimeTypeCount
+            opts?.size()
+        }) {
+            if (permissionRequested) {
+                try {
+                    content.releasePermission()
+                } catch (error: Exception) {
+                    Log.w(LOG_TAG, "Unable to release IME content permission", error)
                 }
             }
         }
-        return null
+        return true
+    }
+
+    private fun handleClipboardImagePaste(): Boolean {
+        val clipboard = MainActivity.rdClipboardManager ?: return false
+        if (!clipboard.primaryClipHasImage()) return false
+
+        thread(name = "rustdesk-ime-clipboard-image") {
+            val image = try {
+                clipboard.readPrimaryImage(MAX_IMAGE_BYTES)
+            } catch (error: Exception) {
+                Log.w(LOG_TAG, "Unable to read clipboard image", error)
+                null
+            }
+            deliverImage(image, "Unable to read the pasted clipboard image")
+        }
+        return true
+    }
+
+    private fun scheduleImageRead(
+        uri: android.net.Uri,
+        mimeType: String,
+        source: String,
+        retain: () -> Unit,
+        finished: () -> Unit = {}
+    ) {
+        thread(name = "rustdesk-ime-image") {
+            val image = try {
+                retain()
+                MainActivity.rdClipboardManager?.readImageUri(
+                    uri,
+                    mimeType,
+                    MAX_IMAGE_BYTES
+                )
+            } catch (error: Exception) {
+                Log.w(LOG_TAG, "Unable to read $source image", error)
+                null
+            } finally {
+                finished()
+            }
+            deliverImage(image, "Unable to read Gboard image content")
+        }
+    }
+
+    private fun deliverImage(image: Map<String, Any>?, errorMessage: String) {
+        editText.post {
+            if (!disposed) {
+                if (image == null) {
+                    emitImageError(errorMessage)
+                } else {
+                    channel.invokeMethod("image_content", image)
+                }
+            }
+        }
+    }
+
+    private fun emitImageError(message: String) {
+        if (!disposed) {
+            channel.invokeMethod("image_error", mapOf("message" to message))
+        }
+    }
+
+    private fun resolveMimeType(uri: android.net.Uri): String? = try {
+        editText.context.contentResolver.getType(uri)
+    } catch (error: Exception) {
+        Log.w(LOG_TAG, "Unable to resolve image MIME type", error)
+        null
     }
 }
 
 private class RemoteImeEditText(context: Context) : EditText(context) {
     private var stateChanged: (() -> Unit)? = null
     private var contentReceived: ((ContentInfoCompat) -> ContentInfoCompat?)? = null
+    private var contentCommitted: ((InputContentInfoCompat, Int, Bundle?) -> Boolean)? = null
+    private var clipboardImagePaste: (() -> Boolean)? = null
     private var suppressEvents = false
     private val emitRunnable = Runnable {
         if (!suppressEvents) stateChanged?.invoke()
@@ -169,10 +262,14 @@ private class RemoteImeEditText(context: Context) : EditText(context) {
     fun initialize(
         initialText: String,
         onStateChanged: () -> Unit,
-        onContentReceived: (ContentInfoCompat) -> ContentInfoCompat?
+        onContentReceived: (ContentInfoCompat) -> ContentInfoCompat?,
+        onContentCommitted: (InputContentInfoCompat, Int, Bundle?) -> Boolean,
+        onClipboardImagePaste: () -> Boolean
     ) {
         stateChanged = onStateChanged
         contentReceived = onContentReceived
+        contentCommitted = onContentCommitted
+        clipboardImagePaste = onClipboardImagePaste
         setTextColor(Color.TRANSPARENT)
         setHintTextColor(Color.TRANSPARENT)
         setBackgroundColor(Color.TRANSPARENT)
@@ -205,7 +302,8 @@ private class RemoteImeEditText(context: Context) : EditText(context) {
         })
 
         ViewCompat.setOnReceiveContentListener(this, CONTENT_MIME_TYPES) { _, payload ->
-            contentReceived?.invoke(payload) ?: payload
+            val handler = contentReceived
+            if (handler == null) payload else handler(payload)
         }
     }
 
@@ -213,6 +311,8 @@ private class RemoteImeEditText(context: Context) : EditText(context) {
         removeCallbacks(emitRunnable)
         stateChanged = null
         contentReceived = null
+        contentCommitted = null
+        clipboardImagePaste = null
         ViewCompat.setOnReceiveContentListener(this, null, null)
     }
 
@@ -224,7 +324,11 @@ private class RemoteImeEditText(context: Context) : EditText(context) {
     override fun onCreateInputConnection(outAttrs: EditorInfo): InputConnection? {
         val base = super.onCreateInputConnection(outAttrs) ?: return null
         EditorInfoCompat.setContentMimeTypes(outAttrs, CONTENT_MIME_TYPES)
-        val richContent = InputConnectionCompat.createWrapper(this, base, outAttrs)
+        @Suppress("DEPRECATION")
+        val richContent = InputConnectionCompat.createWrapper(base, outAttrs) {
+                inputContentInfo, flags, opts ->
+            contentCommitted?.invoke(inputContentInfo, flags, opts) ?: false
+        }
         return StateReportingInputConnection(richContent)
     }
 
@@ -263,8 +367,12 @@ private class RemoteImeEditText(context: Context) : EditText(context) {
         override fun setSelection(start: Int, end: Int): Boolean =
             report(super.setSelection(start, end))
 
-        override fun performContextMenuAction(id: Int): Boolean =
-            report(super.performContextMenuAction(id))
+        override fun performContextMenuAction(id: Int): Boolean {
+            if (id == android.R.id.paste && clipboardImagePaste?.invoke() == true) {
+                return report(true)
+            }
+            return report(super.performContextMenuAction(id))
+        }
     }
 
     companion object {

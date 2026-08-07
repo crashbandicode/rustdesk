@@ -47,6 +47,23 @@ class RdClipboardManager(
     val isCaptureStarted: Boolean
         get() = _isCaptureStarted
 
+    /** Whether Android's current clipboard exposes a readable image URI. */
+    fun primaryClipHasImage(): Boolean {
+        val clipData = clipboardManager.primaryClip ?: return false
+        if (clipData.itemCount == 0) return false
+        val item = clipData.getItemAt(0)
+        val uri = item.uri ?: item.intent?.data ?: return false
+        val advertisedMimeTypes = (0 until clipData.description.mimeTypeCount)
+            .map(clipData.description::getMimeType)
+        val resolvedMimeType = try {
+            context.contentResolver.getType(uri)
+        } catch (error: Exception) {
+            Log.w(logTag, "Unable to resolve clipboard MIME type", error)
+            null
+        }
+        return selectImageMimeType(resolvedMimeType, advertisedMimeTypes) != null
+    }
+
     /** Read the first image from Android's clipboard for an explicit user paste. */
     fun readPrimaryImage(maxBytes: Int): Map<String, Any>? {
         val clipData = clipboardManager.primaryClip ?: return null
@@ -58,19 +75,29 @@ class RdClipboardManager(
             .map(description::getMimeType)
         val item = clipData.getItemAt(0)
         val uri = item.uri ?: item.intent?.data ?: return null
-        val resolvedMimeType = selectImageMimeType(
-            context.contentResolver.getType(uri),
+        val resolvedMimeType = try {
+            context.contentResolver.getType(uri)
+        } catch (error: Exception) {
+            Log.w(logTag, "Unable to resolve clipboard MIME type", error)
+            null
+        }
+        val imageMimeType = selectImageMimeType(
+            resolvedMimeType,
             advertisedMimeTypes
         ) ?: return null
-        return readImageUri(uri, resolvedMimeType, maxBytes)
+        return readImageUri(uri, imageMimeType, maxBytes)
     }
 
     /** Resolve a keyboard-provided content URI when Flutter did not include bytes. */
     fun readImageUri(uri: Uri, mimeType: String, maxBytes: Int): Map<String, Any>? {
-        val actualMimeType = selectImageMimeType(
-            context.contentResolver.getType(uri),
-            listOf(mimeType)
-        ) ?: return null
+        val resolvedMimeType = try {
+            context.contentResolver.getType(uri)
+        } catch (error: Exception) {
+            Log.w(logTag, "Unable to resolve image MIME type", error)
+            null
+        }
+        val actualMimeType = selectImageMimeType(resolvedMimeType, listOf(mimeType))
+            ?: return null
         val bytes = context.contentResolver.openInputStream(uri)?.use { input ->
             val output = ByteArrayOutputStream()
             val buffer = ByteArray(64 * 1024)
