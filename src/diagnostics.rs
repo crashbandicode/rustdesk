@@ -99,7 +99,12 @@ pub fn write_event(event: &str, fields_json: &str) -> ResultType<bool> {
     };
 
     let root = Config::log_path();
-    fs::create_dir_all(&root)?;
+    fs::create_dir_all(&root).with_context(|| {
+        format!(
+            "Failed to create diagnostic log directory {}",
+            root.display()
+        )
+    })?;
     let path = root.join(format!("support-events-{}.jsonl", std::process::id()));
     let record = json!({
         "timestamp_utc": chrono::Utc::now().to_rfc3339(),
@@ -111,7 +116,11 @@ pub fn write_event(event: &str, fields_json: &str) -> ResultType<bool> {
     let _guard = EVENT_WRITER
         .lock()
         .map_err(|_| anyhow!("Diagnostic event writer lock is poisoned"))?;
-    let mut file = OpenOptions::new().create(true).append(true).open(path)?;
+    let mut file = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&path)
+        .with_context(|| format!("Failed to open diagnostic event log {}", path.display()))?;
     serde_json::to_writer(&mut file, &record)?;
     file.write_all(b"\n")?;
     file.flush()?;
@@ -158,7 +167,12 @@ fn export_bundle_from(
         value
     };
 
-    fs::create_dir_all(log_root)?;
+    fs::create_dir_all(log_root).with_context(|| {
+        format!(
+            "Failed to prepare diagnostic log directory {}",
+            log_root.display()
+        )
+    })?;
     let effective_started_millis = if capture_started_millis == 0 {
         now_millis().saturating_sub(DEFAULT_CAPTURE_WINDOW_MILLIS)
     } else {
@@ -203,11 +217,21 @@ fn export_bundle_from(
     let omitted_file_count = candidate_count.saturating_sub(selected.len());
 
     if let Some(parent) = destination.parent() {
-        fs::create_dir_all(parent)?;
+        fs::create_dir_all(parent).with_context(|| {
+            format!(
+                "Failed to create diagnostic destination directory {}",
+                parent.display()
+            )
+        })?;
     }
     let partial = destination.with_extension("zip.part");
     if partial.exists() {
-        fs::remove_file(&partial)?;
+        fs::remove_file(&partial).with_context(|| {
+            format!(
+                "Failed to remove stale diagnostic bundle {}",
+                partial.display()
+            )
+        })?;
     }
 
     let write_result = write_bundle(
@@ -223,9 +247,19 @@ fn export_bundle_from(
         return Err(error);
     }
     if destination.exists() {
-        fs::remove_file(destination)?;
+        fs::remove_file(destination).with_context(|| {
+            format!(
+                "Failed to replace existing diagnostic bundle {}",
+                destination.display()
+            )
+        })?;
     }
-    fs::rename(&partial, destination)?;
+    fs::rename(&partial, destination).with_context(|| {
+        format!(
+            "Failed to finalize diagnostic bundle {}",
+            destination.display()
+        )
+    })?;
 
     Ok(BundleSummary {
         path: destination.to_string_lossy().into_owned(),
@@ -243,7 +277,12 @@ fn write_bundle(
     omitted_file_count: usize,
     included_uncompressed_bytes: u64,
 ) -> ResultType<()> {
-    let file = File::create(partial)?;
+    let file = File::create(partial).with_context(|| {
+        format!(
+            "Failed to create temporary diagnostic bundle {}",
+            partial.display()
+        )
+    })?;
     let mut zip = ZipWriter::new(BufWriter::new(file));
     let options = FileOptions::default()
         .compression_method(CompressionMethod::Deflated)
@@ -293,9 +332,14 @@ fn write_bundle(
         io::copy(&mut source.take(selected_file.included_bytes), &mut zip)?;
     }
 
-    let mut writer = zip.finish()?;
-    writer.flush()?;
-    writer.get_ref().sync_all()?;
+    let mut writer = zip.finish().context("Failed to finish diagnostic ZIP")?;
+    writer
+        .flush()
+        .context("Failed to flush diagnostic ZIP contents")?;
+    writer
+        .get_ref()
+        .sync_all()
+        .context("Failed to synchronize diagnostic ZIP contents")?;
     Ok(())
 }
 
@@ -309,7 +353,13 @@ fn collect_candidates(
     if depth > MAX_WALK_DEPTH {
         return Ok(());
     }
-    for entry in fs::read_dir(directory)? {
+    let entries = fs::read_dir(directory).with_context(|| {
+        format!(
+            "Failed to enumerate diagnostic log directory {}",
+            directory.display()
+        )
+    })?;
+    for entry in entries {
         let entry = entry?;
         let file_type = entry.file_type()?;
         if file_type.is_symlink() {
@@ -427,6 +477,20 @@ mod tests {
         fs::create_dir_all(&root).unwrap();
         let error = export_bundle_from(&root, &root.join("bundle.txt"), 1, "{}").unwrap_err();
         assert!(error.to_string().contains("must end in .zip"));
+        fs::remove_dir_all(root).ok();
+    }
+
+    #[test]
+    fn inaccessible_log_root_reports_the_failed_stage() {
+        let root = unique_test_dir("log-root-error");
+        fs::create_dir_all(&root).unwrap();
+        let log_root = root.join("not-a-directory");
+        fs::write(&log_root, b"file blocks directory creation").unwrap();
+
+        let error = export_bundle_from(&log_root, &root.join("bundle.zip"), 1, "{}").unwrap_err();
+        assert!(error
+            .to_string()
+            .contains("Failed to prepare diagnostic log directory"));
         fs::remove_dir_all(root).ok();
     }
 }

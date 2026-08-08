@@ -317,7 +317,20 @@ impl Client {
         // no need to care about multiple rendezvous servers case, since it is acutally not used any more.
         // Shared state for UDP NAT test result
         if crate::get_udp_punch_enabled() && !interface.is_force_relay() {
-            if let Ok((socket, addr)) = new_direct_udp_for(&rendezvous_server).await {
+            // In WSS/ICE mode this socket only talks to STUN and the peer. Do not
+            // probe or resolve the rendezvous server's direct :21116 endpoint:
+            // Cloudflare cannot carry that UDP path, and its DNS fallback used
+            // to be an unbounded pre-signaling await on Android.
+            let direct_udp = if crate::ice::enabled() && use_ws() {
+                let local_addr = Config::get_any_listen_addr(true);
+                UdpSocket::bind(local_addr)
+                    .await
+                    .map(|socket| (Arc::new(socket), local_addr))
+                    .map_err(Into::into)
+            } else {
+                new_direct_udp_for(&rendezvous_server).await
+            };
+            if let Ok((socket, addr)) = direct_udp {
                 let udp_port = Arc::new(Mutex::new(0));
                 // [ICE experiment] over WebSocket the UDP NAT test to hbbs is dropped by
                 // the proxy and would race the STUN gather in _start_inner; skip it and

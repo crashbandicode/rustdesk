@@ -3335,7 +3335,8 @@ class CursorModel with ChangeNotifier {
 
   set blockEvents(bool v) => _blockEvents = v;
 
-  keyHelpToolsVisibilityChanged(Rect? rect) {
+  bool keyHelpToolsVisibilityChanged(Rect? rect) {
+    final changed = _keyHelpToolsRect != rect;
     _keyHelpToolsRect = rect;
     if (rect == null) {
       _lastIsBlocked = false;
@@ -3345,6 +3346,7 @@ class CursorModel with ChangeNotifier {
       // `lastIsBlocked` will be set when the cursor is moving or touch somewhere else.
       _lastIsBlocked = true;
     }
+    return changed;
   }
 
   void softKeyboardVisibilityChanged(bool keyboardIsVisible) {
@@ -4063,7 +4065,7 @@ class FFI {
   }
 
   /// Start with the given [id]. Only transfer file if [isFileTransfer], only view camera if [isViewCamera], only port forward if [isPortForward].
-  void start(
+  bool start(
     String id, {
     bool isFileTransfer = false,
     bool isViewCamera = false,
@@ -4124,11 +4126,21 @@ class FFI {
         isSharedPassword: isSharedPassword ?? false,
         connToken: connToken,
       );
+      if (addRes.isNotEmpty) {
+        debugPrint('Failed to add session $sessionId for $id: $addRes');
+        unawaited(DiagnosticSupport.event('session_add_failed', {
+          'session_id': sessionId.toString(),
+          'peer_id': id,
+          'error': addRes,
+        }));
+        closed = true;
+        return false;
+      }
     } else if (display != null) {
       if (displays == null) {
         debugPrint(
             'Unreachable, failed to add existed session to $id, the displays is null while display is $display');
-        return;
+        return false;
       }
       final addRes = bind.sessionAddExistedSync(
           id: id,
@@ -4138,7 +4150,7 @@ class FFI {
       if (addRes != '') {
         debugPrint(
             'Unreachable, failed to add existed session to $id, $addRes');
-        return;
+        return false;
       }
       ffiModel.pi.currentDisplay = display;
     }
@@ -4183,7 +4195,7 @@ class FFI {
         await imageModel.onImage(display, image, isCurrentSession);
       });
       this.id = id;
-      return;
+      return true;
     }
 
     final cb = ffiModel.startEventListener(sessionId, id);
@@ -4267,6 +4279,7 @@ class FFI {
     });
     // every instance will bind a stream
     this.id = id;
+    return true;
   }
 
   Future<void> onEvent2UIRgba() async {

@@ -55,20 +55,31 @@ class MobileSessionLifecycleTarget {
 
   MobileSessionLifecycleCallback? _onPaused;
   MobileSessionLifecycleCallback? _onResumed;
+  MobileSessionLifecycleCallback? _onEnsureHealthy;
 
   bool get attached => _onPaused != null && _onResumed != null;
 
   void attach({
     required MobileSessionLifecycleCallback onPaused,
     required MobileSessionLifecycleCallback onResumed,
+    MobileSessionLifecycleCallback? onEnsureHealthy,
   }) {
     _onPaused = onPaused;
     _onResumed = onResumed;
+    _onEnsureHealthy = onEnsureHealthy;
   }
 
   void detach() {
     _onPaused = null;
     _onResumed = null;
+    _onEnsureHealthy = null;
+  }
+
+  bool ensureHealthy() {
+    final callback = _onEnsureHealthy;
+    if (callback == null) return false;
+    callback();
+    return true;
   }
 
   void pause() => _onPaused?.call();

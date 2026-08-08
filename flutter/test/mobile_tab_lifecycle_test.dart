@@ -6,6 +6,7 @@ MobileSessionLifecycleTarget _target(String id, List<String> events) {
     ..attach(
       onPaused: () => events.add('pause:$id'),
       onResumed: () => events.add('resume:$id'),
+      onEnsureHealthy: () => events.add('health:$id'),
     );
 }
 
@@ -42,6 +43,16 @@ void main() {
 
     expect(coordinator.request('butterbridge-session'), isTrue);
     expect(closed, ['yoga-session', 'butterbridge-session']);
+  });
+
+  test('selected tab can request a transport health check', () {
+    final events = <String>[];
+    final target = _target('yoga', events);
+
+    expect(target.ensureHealthy(), isTrue);
+    expect(events, ['health:yoga']);
+    target.detach();
+    expect(target.ensureHealthy(), isFalse);
   });
 
   testWidgets('selected tab resumes first and live siblings are staggered', (

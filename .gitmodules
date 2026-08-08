@@ -1,4 +1,4 @@
 [submodule "libs/hbb_common"]
 	path = libs/hbb_common
 	url = https://github.com/crashbandicode/hbb_common
-	branch = experiment/ice-candidate-traversal
+	branch = main

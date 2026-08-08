@@ -150,11 +150,17 @@ class _RemotePageState extends State<RemotePage> {
         _ffi.canvasModel.mobileFocusCanvasCursor();
         _ffi.canvasModel.isMobileCanvasChanged = false;
       },
+      onRefresh: () {
+        _ffi.canvasModel.mobileFocusCanvasCursor();
+        _ffi.canvasModel.isMobileCanvasChanged = false;
+      },
       onRestore: _ffi.canvasModel.restoreMobileOffsetAfterSoftKeyboard,
     );
     widget.lifecycleTarget.attach(
       onPaused: _handleAppPaused,
       onResumed: () => unawaited(_handleAppResumed()),
+      onEnsureHealthy: () =>
+          unawaited(_handleAppResumed(explicitHealthCheck: true)),
     );
     _ffi.imageModel.setPresentationActive(widget.active);
     _ffi.imageModel.addCallbackOnFrame(_handleIncomingFrame);
@@ -162,17 +168,26 @@ class _RemotePageState extends State<RemotePage> {
     _ffi.chatModel.voiceCallStatus.value = VoiceCallStatus.notStarted;
     _ffi.dialogManager.loadMobileActionsOverlayVisible();
     _ffi.ffiModel.updateEventListener(sessionId, widget.id);
-    _ffi.start(
+    final sessionStarted = _ffi.start(
       widget.id,
       password: widget.password,
       isSharedPassword: widget.isSharedPassword,
       forceRelay: widget.forceRelay,
     );
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      SystemChrome.setEnabledSystemUIMode(SystemUiMode.manual, overlays: []);
-      _ffi.dialogManager
-          .showLoading(translate('Connecting...'), onCancel: _ffi.requestClose);
-    });
+    if (!sessionStarted) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (!mounted) return;
+        showToast(translate('Unable to start the connection'));
+        widget.onCloseRequested?.call();
+      });
+    }
+    if (sessionStarted) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        SystemChrome.setEnabledSystemUIMode(SystemUiMode.manual, overlays: []);
+        _ffi.dialogManager.showLoading(translate('Connecting...'),
+            onCancel: _ffi.requestClose);
+      });
+    }
     WakelockManager.enable(_uniqueKey);
     _physicalFocusNode.requestFocus();
     _ffi.inputModel.listenToMouse(true);
@@ -364,7 +379,7 @@ class _RemotePageState extends State<RemotePage> {
     }));
   }
 
-  Future<void> _handleAppResumed() async {
+  Future<void> _handleAppResumed({bool explicitHealthCheck = false}) async {
     _resumeOverlayTimer?.cancel();
     if (mounted) {
       setState(() => _awaitingResumeFrame = true);
@@ -411,11 +426,27 @@ class _RemotePageState extends State<RemotePage> {
           }
         });
       } else {
-        // The session was still making its first connection when Android
-        // backgrounded it. Let that initial native handshake continue.
-        _resumeOverlayTimer = Timer(const Duration(milliseconds: 750), () {
-          _clearResumeOverlay(source: 'initial_connection');
-        });
+        if (explicitHealthCheck) {
+          // The user explicitly selected/reselected this tab but it has never
+          // received peer info. Ask native to retry: a fresh Connecting round
+          // is left alone, while a stale/disconnected round is superseded.
+          final started = _ffi.ffiModel.beginMobileResumeRecovery();
+          unawaited(DiagnosticSupport.event(
+              'mobile_selected_tab_initial_recovery', {
+            'session_id': widget.sessionId.toString(),
+            'peer_id': widget.id,
+            'reconnect_dispatched': started,
+          }));
+          if (!started) {
+            _clearResumeOverlay(source: 'initial_reconnect_unavailable');
+          }
+        } else {
+          // The session was still making its first connection when Android
+          // backgrounded it. Let that initial native handshake continue.
+          _resumeOverlayTimer = Timer(const Duration(milliseconds: 750), () {
+            _clearResumeOverlay(source: 'initial_connection');
+          });
+        }
       }
     }
   }
@@ -1078,7 +1109,8 @@ class _RemotePageState extends State<RemotePage> {
             KeyHelpTools(
                 ffi: _ffi,
                 keyboardIsVisible: keyboardIsVisible,
-                showGestureHelp: _showGestureHelp),
+                showGestureHelp: _showGestureHelp,
+                onLayoutChanged: _keyboardViewportGuard.refreshLayout),
             SizedBox(
               width: isAndroid ? 1 : 0,
               height: isAndroid ? 1 : 0,
@@ -1335,6 +1367,7 @@ class KeyHelpTools extends StatefulWidget {
   final FFI ffi;
   final bool keyboardIsVisible;
   final bool showGestureHelp;
+  final VoidCallback onLayoutChanged;
 
   /// need to show by external request, etc [keyboardIsVisible] or [changeTouchMode]
   bool get requestShow => keyboardIsVisible || showGestureHelp;
@@ -1342,7 +1375,8 @@ class KeyHelpTools extends StatefulWidget {
   KeyHelpTools(
       {required this.ffi,
       required this.keyboardIsVisible,
-      required this.showGestureHelp});
+      required this.showGestureHelp,
+      required this.onLayoutChanged});
 
   @override
   State<KeyHelpTools> createState() => _KeyHelpToolsState();
@@ -1354,6 +1388,7 @@ class _KeyHelpToolsState extends State<KeyHelpTools> {
   var _pin = false;
   final _keyboardVisibilityController = KeyboardVisibilityController();
   final _key = GlobalKey();
+  bool _rectUpdateScheduled = false;
 
   FFI get _ffi => widget.ffi;
   InputModel get inputModel => _ffi.inputModel;
@@ -1379,7 +1414,18 @@ class _KeyHelpToolsState extends State<KeyHelpTools> {
         onPressed: onPressed);
   }
 
-  _updateRect() {
+  void _scheduleRectUpdate() {
+    if (_rectUpdateScheduled) return;
+    _rectUpdateScheduled = true;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _rectUpdateScheduled = false;
+      if (mounted) {
+        _updateRect();
+      }
+    });
+  }
+
+  void _updateRect() {
     RenderObject? renderObject = _key.currentContext?.findRenderObject();
     if (renderObject == null) {
       return;
@@ -1387,8 +1433,12 @@ class _KeyHelpToolsState extends State<KeyHelpTools> {
     if (renderObject is RenderBox) {
       final size = renderObject.size;
       Offset pos = renderObject.localToGlobal(Offset.zero);
-      _ffi.cursorModel.keyHelpToolsVisibilityChanged(
-          Rect.fromLTWH(pos.dx, pos.dy, size.width, size.height));
+      final changed = _ffi.cursorModel.keyHelpToolsVisibilityChanged(
+        Rect.fromLTWH(pos.dx, pos.dy, size.width, size.height),
+      );
+      if (changed) {
+        widget.onLayoutChanged();
+      }
     }
   }
 
@@ -1535,10 +1585,7 @@ class _KeyHelpToolsState extends State<KeyHelpTools> {
       }),
     ];
     final space = size.width > 320 ? 4.0 : 2.0;
-    // 500 ms is long enough for this widget to be built!
-    Future.delayed(Duration(milliseconds: 500), () {
-      _updateRect();
-    });
+    _scheduleRectUpdate();
     return Container(
         key: _key,
         color: Color(0xAA000000),

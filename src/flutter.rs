@@ -1377,17 +1377,29 @@ pub fn session_start_(
 
     if let Some(session) = sessions::get_session_by_session_id(session_id) {
         let is_first_ui_session = session.session_handlers.read().unwrap().len() == 1;
-        if !is_connected && is_first_ui_session {
+        let should_restart_transport = session
+            .connection_round_state
+            .lock()
+            .unwrap()
+            .should_start_for_new_handler();
+        if !is_connected && (is_first_ui_session || should_restart_transport) {
             log::info!(
-                "Session {} start, use texture render: {}",
+                "Session {} start, first handler: {}, transport restart: {}, use texture render: {}",
                 id,
+                is_first_ui_session,
+                should_restart_transport,
                 session.use_texture_render.load(Ordering::Relaxed)
             );
-            let session = (*session).clone();
-            std::thread::spawn(move || {
-                let round = session.connection_round_state.lock().unwrap().new_round();
-                io_loop(session, round);
+            let session_for_thread = (*session).clone();
+            let round = session_for_thread
+                .connection_round_state
+                .lock()
+                .unwrap()
+                .new_round();
+            let handle = std::thread::spawn(move || {
+                io_loop(session_for_thread, round);
             });
+            *session.thread.lock().unwrap() = Some(handle);
         }
         Ok(())
     } else {
