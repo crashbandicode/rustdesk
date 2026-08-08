@@ -6,6 +6,7 @@ void main() {
     final events = <String>[];
     final guard = MobileKeyboardViewportGuard(
       onAdjust: () => events.add('adjust'),
+      onRefresh: () => events.add('refresh'),
       onRestore: () => events.add('restore'),
     );
 
@@ -32,6 +33,7 @@ void main() {
     final events = <String>[];
     final guard = MobileKeyboardViewportGuard(
       onAdjust: () => events.add('adjust'),
+      onRefresh: () => events.add('refresh'),
       onRestore: () => events.add('restore'),
     );
 
@@ -53,6 +55,7 @@ void main() {
     final events = <String>[];
     final guard = MobileKeyboardViewportGuard(
       onAdjust: () => events.add('adjust'),
+      onRefresh: () => events.add('refresh'),
       onRestore: () => events.add('restore'),
     );
 
@@ -68,5 +71,29 @@ void main() {
     );
 
     expect(events, ['adjust', 'restore']);
+  });
+
+  test('re-adjusts after the keyboard toolbar finishes laying out', () {
+    final events = <String>[];
+    final guard = MobileKeyboardViewportGuard(
+      onAdjust: () => events.add('adjust'),
+      onRefresh: () => events.add('refresh'),
+      onRestore: () => events.add('restore'),
+    );
+
+    guard.update(
+      keyboardVisible: true,
+      remoteEditorVisible: true,
+      sessionActive: true,
+    );
+    guard.refreshLayout();
+    guard.update(
+      keyboardVisible: false,
+      remoteEditorVisible: false,
+      sessionActive: true,
+    );
+    guard.refreshLayout();
+
+    expect(events, ['adjust', 'refresh', 'restore']);
   });
 }

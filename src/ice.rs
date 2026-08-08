@@ -178,19 +178,30 @@ pub async fn gather_srflx_on(
     stun_server: &str,
     timeout_ms: u64,
 ) -> ResultType<SocketAddr> {
-    let target = resolve_v4(stun_server).await?;
-    let txn = new_txn();
-    let req = build_binding_request(&txn);
-    socket.send_to(&req, target).await?;
-    let mut buf = [0u8; 512];
-    let (n, _src) = timeout(
-        Duration::from_millis(timeout_ms),
-        socket.recv_from(&mut buf),
-    )
-    .await??;
-    match parse_mapped_address(&buf[..n]) {
-        Some(addr) => Ok(addr),
-        None => bail!("STUN response from {} had no mapped address", stun_server),
+    // Bound the entire operation, including DNS resolution and the UDP send.
+    // Previously only recv_from was timed out, so a stalled Android resolver
+    // could leave the session in Connecting forever before a PunchHoleRequest
+    // was ever sent to hbbs.
+    let operation = async {
+        let target = resolve_v4(stun_server).await?;
+        let txn = new_txn();
+        let req = build_binding_request(&txn);
+        socket.send_to(&req, target).await?;
+        let mut buf = [0u8; 512];
+        let (n, _src) = socket.recv_from(&mut buf).await?;
+        match parse_mapped_address(&buf[..n]) {
+            Some(addr) => Ok(addr),
+            None => bail!("STUN response from {} had no mapped address", stun_server),
+        }
+    };
+
+    match timeout(Duration::from_millis(timeout_ms), operation).await {
+        Ok(result) => result,
+        Err(_) => bail!(
+            "STUN discovery via {} timed out after {} ms",
+            stun_server,
+            timeout_ms
+        ),
     }
 }
 

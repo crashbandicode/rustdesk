@@ -100,17 +100,27 @@ enum ConnectionState {
 pub struct ConnectionRoundState {
     round: u32,
     state: ConnectionState,
+    state_since: Instant,
 }
+
+const CONNECTING_RETRY_TIMEOUT: TokioDuration = TokioDuration::from_secs(15);
 
 impl ConnectionRoundState {
     pub fn new_round(&mut self) -> u32 {
-        self.round += 1;
+        self.round = self.round.wrapping_add(1);
         self.state = ConnectionState::Connecting;
+        self.state_since = Instant::now();
         self.round
     }
 
-    pub fn set_connected(&mut self) {
-        self.state = ConnectionState::Connected;
+    pub fn set_connected(&mut self, round: u32) -> bool {
+        if self.is_round_gt(round) {
+            false
+        } else {
+            self.state = ConnectionState::Connected;
+            self.state_since = Instant::now();
+            true
+        }
     }
 
     pub fn is_round_gt(&self, round: u32) -> bool {
@@ -126,12 +136,32 @@ impl ConnectionRoundState {
             false
         } else {
             self.state = ConnectionState::Disconnected;
+            self.state_since = Instant::now();
             true
         }
     }
 
+    pub fn cancel_connecting_round(&mut self) -> bool {
+        if !matches!(self.state, ConnectionState::Connecting) {
+            return false;
+        }
+        self.round = self.round.wrapping_add(1);
+        self.state = ConnectionState::Disconnected;
+        self.state_since = Instant::now();
+        true
+    }
+
     pub fn is_connected(&self) -> bool {
         matches!(self.state, ConnectionState::Connected)
+    }
+
+    fn is_connecting_stale(&self) -> bool {
+        matches!(self.state, ConnectionState::Connecting)
+            && self.state_since.elapsed() >= CONNECTING_RETRY_TIMEOUT
+    }
+
+    pub fn should_start_for_new_handler(&self) -> bool {
+        matches!(self.state, ConnectionState::Disconnected) || self.is_connecting_stale()
     }
 }
 
@@ -140,6 +170,7 @@ impl Default for ConnectionRoundState {
         Self {
             round: 0,
             state: ConnectionState::Connecting,
+            state_since: Instant::now(),
         }
     }
 }
@@ -1369,13 +1400,25 @@ impl<T: InvokeUiSession> Session<T> {
     }
 
     pub fn reconnect(&self, force_relay: bool) {
-        // 1. If current session is connecting, do not reconnect.
+        // 1. If current session is still within its bounded connection attempt,
+        //    do not reconnect. Supersede a stale attempt so the UI retry cannot
+        //    silently no-op forever after a resolver or socket stall.
         // 2. If the connection is established, send `Data::Close`.
         // 3. If the connection is disconnected, do nothing.
         let mut connection_round_state_lock = self.connection_round_state.lock().unwrap();
         if self.thread.lock().unwrap().is_some() {
             match connection_round_state_lock.state {
-                ConnectionState::Connecting => return,
+                ConnectionState::Connecting
+                    if !connection_round_state_lock.is_connecting_stale() =>
+                {
+                    return;
+                }
+                ConnectionState::Connecting => {
+                    log::warn!(
+                        "Superseding stale connection attempt after {:?}",
+                        connection_round_state_lock.state_since.elapsed()
+                    );
+                }
                 ConnectionState::Connected => self.send(Data::Close),
                 ConnectionState::Disconnected => {}
             }
@@ -1488,6 +1531,13 @@ impl<T: InvokeUiSession> Session<T> {
     }
 
     pub fn close(&self) {
+        // Data::Close cannot cancel a connection attempt before its sender is
+        // installed. Invalidate that round first so a bounded DNS/socket await
+        // cannot later surface as a zombie session after the user pressed Cancel.
+        self.connection_round_state
+            .lock()
+            .unwrap()
+            .cancel_connecting_round();
         self.send(Data::Close);
     }
 
@@ -2159,4 +2209,71 @@ async fn start_one_port_forward<T: InvokeUiSession>(
 async fn send_note(url: String, id: String, sid: u64, note: String) {
     let body = serde_json::json!({ "id": id, "session_id": sid, "note": note });
     allow_err!(crate::post_request(url, body.to_string(), "").await);
+}
+
+#[cfg(test)]
+mod connection_round_state_tests {
+    use super::*;
+
+    #[test]
+    fn fresh_connecting_round_is_not_stale() {
+        let state = ConnectionRoundState::default();
+        assert!(!state.is_connecting_stale());
+    }
+
+    #[test]
+    fn connecting_round_becomes_retryable_after_deadline() {
+        let mut state = ConnectionRoundState::default();
+        state.state_since = Instant::now() - CONNECTING_RETRY_TIMEOUT;
+        assert!(state.is_connecting_stale());
+    }
+
+    #[test]
+    fn connected_round_is_never_classified_as_stale_connecting() {
+        let mut state = ConnectionRoundState::default();
+        state.state_since = Instant::now() - CONNECTING_RETRY_TIMEOUT;
+        assert!(state.set_connected(state.round));
+        assert!(!state.is_connecting_stale());
+    }
+
+    #[test]
+    fn superseded_round_cannot_mark_the_session_connected() {
+        let mut state = ConnectionRoundState::default();
+        let old_round = state.new_round();
+        state.new_round();
+        assert!(!state.set_connected(old_round));
+        assert!(!state.is_connected());
+    }
+
+    #[test]
+    fn disconnected_or_stale_session_starts_for_a_new_handler() {
+        let mut state = ConnectionRoundState::default();
+        assert!(!state.should_start_for_new_handler());
+
+        state.state = ConnectionState::Disconnected;
+        assert!(state.should_start_for_new_handler());
+
+        state.state = ConnectionState::Connecting;
+        state.state_since = Instant::now() - CONNECTING_RETRY_TIMEOUT;
+        assert!(state.should_start_for_new_handler());
+    }
+
+    #[test]
+    fn cancel_invalidates_a_pre_connection_round() {
+        let mut state = ConnectionRoundState::default();
+        let cancelled_round = state.new_round();
+        assert!(state.cancel_connecting_round());
+        assert!(!state.set_connected(cancelled_round));
+        assert!(state.should_start_for_new_handler());
+    }
+
+    #[test]
+    fn close_does_not_invalidate_a_connected_round() {
+        let mut state = ConnectionRoundState::default();
+        let connected_round = state.new_round();
+        assert!(state.set_connected(connected_round));
+
+        assert!(!state.cancel_connecting_round());
+        assert!(state.set_disconnected(connected_round));
+    }
 }

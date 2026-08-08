@@ -179,11 +179,19 @@ impl<T: InvokeUiSession> Remote<T> {
         .await
         {
             Ok(((mut peer, direct, pk, kcp, stream_type), (feedback, rendezvous_server))) => {
-                self.handler
+                if !self
+                    .handler
                     .connection_round_state
                     .lock()
                     .unwrap()
-                    .set_connected();
+                    .set_connected(round)
+                {
+                    log::info!(
+                        "Discarding connection result from superseded round {}",
+                        round
+                    );
+                    return;
+                }
                 let is_secured = peer.is_secured();
                 self.handler
                     .set_connection_type(is_secured, direct, stream_type); // flutter -> connection_ready

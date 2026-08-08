@@ -430,8 +430,10 @@ class MainActivity : FlutterActivity() {
     }
 
     private fun diagnosticDirectory(): File {
-        val base = getExternalFilesDir(null) ?: cacheDir
-        return File(base, "diagnostics")
+        // The bundle is short-lived share-sheet output. Keep it in the app's
+        // internal FileProvider-authorized cache so Android scoped storage and
+        // removable/external volume state cannot block creation or replacement.
+        return File(cacheDir, "diagnostics")
     }
 
     private fun readImagePayload(

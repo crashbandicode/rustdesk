@@ -341,6 +341,7 @@ class _MobileConnectionTabPageState extends State<MobileConnectionTabPage>
   final List<_MobileRemoteSession> _sessions = [];
   late final MobileTabLifecycleCoordinator _lifecycleCoordinator;
   late final MobileSessionCloseCoordinator<SessionID> _closeCoordinator;
+  final Map<String, Future<void>> _pendingPeerCloses = {};
   final String _addressBookListenerKey = Uuid().v4();
   int _selectedIndex = 0;
 
@@ -360,7 +361,21 @@ class _MobileConnectionTabPageState extends State<MobileConnectionTabPage>
     );
     _closeCoordinator = MobileSessionCloseCoordinator<SessionID>(
       onCloseRequested: (sessionId) {
-        unawaited(bind.sessionClose(sessionId: sessionId));
+        final index = _sessions.indexWhere((e) => e.sessionId == sessionId);
+        final peerId = index < 0 ? null : _sessions[index].id;
+        final closeFuture = bind.sessionClose(sessionId: sessionId);
+        if (peerId == null) {
+          unawaited(closeFuture);
+          return;
+        }
+        _pendingPeerCloses[peerId] = closeFuture;
+        unawaited(closeFuture
+            .whenComplete(() {
+              if (identical(_pendingPeerCloses[peerId], closeFuture)) {
+                _pendingPeerCloses.remove(peerId);
+              }
+            })
+            .catchError((_) {}));
       },
     );
     gFFI.abModel.addPeerUpdateListener(
@@ -473,6 +488,20 @@ class _MobileConnectionTabPageState extends State<MobileConnectionTabPage>
       return;
     }
 
+    final pendingClose = _pendingPeerCloses[normalizedId];
+    if (pendingClose != null) {
+      try {
+        await pendingClose;
+      } catch (error) {
+        debugPrint('Failed to finish closing $normalizedId: $error');
+        unawaited(DiagnosticSupport.event('mobile_peer_close_wait_failed', {
+          'peer_id': normalizedId,
+          'error': error.toString(),
+        }));
+      }
+      if (!mounted) return;
+    }
+
     setState(() {
       _sessions.add(_MobileRemoteSession(
         id: normalizedId,
@@ -524,14 +553,61 @@ class _MobileConnectionTabPageState extends State<MobileConnectionTabPage>
 
   void _selectSession(int index) {
     if (index < 0 || index >= _sessions.length) return;
+    final session = _sessions[index];
     setState(() => _selectedIndex = index);
-    final target = _sessions[index].lifecycleTarget;
-    if (_lifecycleCoordinator.prioritize(target)) {
+    final target = session.lifecycleTarget;
+    final resumeTriggered = _lifecycleCoordinator.prioritize(target);
+    if (resumeTriggered) {
       unawaited(DiagnosticSupport.event('mobile_tab_resume_prioritized', {
         'session_id': target.sessionId,
         'peer_id': target.peerId,
       }));
     }
+    unawaited(_ensureSelectedSessionReady(session,
+        resumeTriggered: resumeTriggered));
+  }
+
+  Future<void> _ensureSelectedSessionReady(
+    _MobileRemoteSession session, {
+    required bool resumeTriggered,
+  }) async {
+    final presence = await bind.sessionGetOption(
+      sessionId: session.sessionId,
+      arg: '__session_presence_probe__',
+    );
+    if (!mounted) return;
+    final index =
+        _sessions.indexWhere((item) => item.sessionId == session.sessionId);
+    if (index < 0) return;
+
+    if (presence == null) {
+      final replacement = _MobileRemoteSession(
+        id: session.id,
+        password: session.password,
+        isSharedPassword: session.isSharedPassword,
+        forceRelay: session.forceRelay,
+      );
+      _lifecycleCoordinator.remove(session.lifecycleTarget);
+      setState(() {
+        _sessions[index] = replacement;
+        _selectedIndex = index;
+      });
+      unawaited(DiagnosticSupport.event('mobile_missing_native_session_replaced', {
+        'old_session_id': session.sessionId.toString(),
+        'new_session_id': replacement.sessionId.toString(),
+        'peer_id': session.id,
+      }));
+      return;
+    }
+
+    final healthCheckAttached =
+        resumeTriggered || session.lifecycleTarget.ensureHealthy();
+    unawaited(DiagnosticSupport.event('mobile_selected_tab_health_checked', {
+      'session_id': session.sessionId.toString(),
+      'peer_id': session.id,
+      'attached': healthCheckAttached,
+      'resume_triggered': resumeTriggered,
+    }));
   }
 
   Future<void> _confirmCloseSession(_MobileRemoteSession session) async {
