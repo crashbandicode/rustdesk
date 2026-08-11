@@ -410,7 +410,7 @@ private class RemoteImeEditText(context: Context) : EditText(context) {
     private open inner class Api33StateReportingInputConnection(target: InputConnection) :
         StateReportingInputConnection(target) {
         override fun commitText(
-            text: CharSequence?,
+            text: CharSequence,
             newCursorPosition: Int,
             textAttribute: TextAttribute?
         ): Boolean = reportCommitBoundary(
@@ -418,7 +418,7 @@ private class RemoteImeEditText(context: Context) : EditText(context) {
         )
 
         override fun setComposingText(
-            text: CharSequence?,
+            text: CharSequence,
             newCursorPosition: Int,
             textAttribute: TextAttribute?
         ): Boolean = report(
