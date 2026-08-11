@@ -2,7 +2,6 @@ package com.carriez.flutter_hbb
 
 import android.content.Context
 import android.graphics.Color
-import android.os.Build
 import android.os.Bundle
 import android.text.Editable
 import android.text.InputType
@@ -10,15 +9,11 @@ import android.text.TextWatcher
 import android.util.Log
 import android.view.View
 import android.view.inputmethod.BaseInputConnection
-import android.view.inputmethod.CompletionInfo
-import android.view.inputmethod.CorrectionInfo
 import android.view.inputmethod.EditorInfo
 import android.view.inputmethod.InputConnection
 import android.view.inputmethod.InputConnectionWrapper
 import android.view.inputmethod.InputMethodManager
-import android.view.inputmethod.TextAttribute
 import android.widget.EditText
-import androidx.annotation.RequiresApi
 import androidx.core.view.ContentInfoCompat
 import androidx.core.view.ViewCompat
 import androidx.core.view.inputmethod.EditorInfoCompat
@@ -263,13 +258,6 @@ private class RemoteImeEditText(context: Context) : EditText(context) {
     private val emitRunnable = Runnable {
         if (!suppressEvents) stateChanged?.invoke()
     }
-    private val stateDispatch = ImeStateDispatchCoordinator(
-        cancelPending = { removeCallbacks(emitRunnable) },
-        postPending = { post(emitRunnable) },
-        emitNow = {
-            if (!suppressEvents) stateChanged?.invoke()
-        }
-    )
 
     fun initialize(
         initialText: String,
@@ -341,42 +329,24 @@ private class RemoteImeEditText(context: Context) : EditText(context) {
                 inputContentInfo, flags, opts ->
             contentCommitted?.invoke(inputContentInfo, flags, opts) ?: false
         }
-        return when {
-            Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE ->
-                Api34StateReportingInputConnection(richContent)
-            Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU ->
-                Api33StateReportingInputConnection(richContent)
-            else -> StateReportingInputConnection(richContent)
-        }
+        return StateReportingInputConnection(richContent)
     }
 
     private fun scheduleStateChanged() {
         if (suppressEvents) return
-        stateDispatch.schedule()
+        removeCallbacks(emitRunnable)
+        post(emitRunnable)
     }
 
-    private open inner class StateReportingInputConnection(target: InputConnection) :
+    private inner class StateReportingInputConnection(target: InputConnection) :
         InputConnectionWrapper(target, false) {
-        protected fun report(result: Boolean): Boolean {
+        private fun report(result: Boolean): Boolean {
             scheduleStateChanged()
             return result
         }
 
-        protected fun reportCommitBoundary(result: Boolean): Boolean {
-            // TextWatcher schedules a provisional callback from inside the
-            // wrapped operation. Emit the final state synchronously before a
-            // following setComposingText call can replace that callback.
-            return stateDispatch.commitBoundary(result)
-        }
-
         override fun commitText(text: CharSequence?, newCursorPosition: Int): Boolean =
-            reportCommitBoundary(super.commitText(text, newCursorPosition))
-
-        override fun commitCompletion(text: CompletionInfo?): Boolean =
-            reportCommitBoundary(super.commitCompletion(text))
-
-        override fun commitCorrection(correctionInfo: CorrectionInfo?): Boolean =
-            reportCommitBoundary(super.commitCorrection(correctionInfo))
+            report(super.commitText(text, newCursorPosition))
 
         override fun setComposingText(text: CharSequence?, newCursorPosition: Int): Boolean =
             report(super.setComposingText(text, newCursorPosition))
@@ -384,8 +354,7 @@ private class RemoteImeEditText(context: Context) : EditText(context) {
         override fun setComposingRegion(start: Int, end: Int): Boolean =
             report(super.setComposingRegion(start, end))
 
-        override fun finishComposingText(): Boolean =
-            reportCommitBoundary(super.finishComposingText())
+        override fun finishComposingText(): Boolean = report(super.finishComposingText())
 
         override fun deleteSurroundingText(beforeLength: Int, afterLength: Int): Boolean =
             report(super.deleteSurroundingText(beforeLength, afterLength))
@@ -404,46 +373,6 @@ private class RemoteImeEditText(context: Context) : EditText(context) {
             }
             return report(super.performContextMenuAction(id))
         }
-    }
-
-    @RequiresApi(Build.VERSION_CODES.TIRAMISU)
-    private open inner class Api33StateReportingInputConnection(target: InputConnection) :
-        StateReportingInputConnection(target) {
-        override fun commitText(
-            text: CharSequence,
-            newCursorPosition: Int,
-            textAttribute: TextAttribute?
-        ): Boolean = reportCommitBoundary(
-            super.commitText(text, newCursorPosition, textAttribute)
-        )
-
-        override fun setComposingText(
-            text: CharSequence,
-            newCursorPosition: Int,
-            textAttribute: TextAttribute?
-        ): Boolean = report(
-            super.setComposingText(text, newCursorPosition, textAttribute)
-        )
-
-        override fun setComposingRegion(
-            start: Int,
-            end: Int,
-            textAttribute: TextAttribute?
-        ): Boolean = report(super.setComposingRegion(start, end, textAttribute))
-    }
-
-    @RequiresApi(Build.VERSION_CODES.UPSIDE_DOWN_CAKE)
-    private inner class Api34StateReportingInputConnection(target: InputConnection) :
-        Api33StateReportingInputConnection(target) {
-        override fun replaceText(
-            start: Int,
-            end: Int,
-            text: CharSequence,
-            newCursorPosition: Int,
-            textAttribute: TextAttribute?
-        ): Boolean = reportCommitBoundary(
-            super.replaceText(start, end, text, newCursorPosition, textAttribute)
-        )
     }
 
     companion object {
