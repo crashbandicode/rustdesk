@@ -47,7 +47,8 @@ has_dialog_background_in_theme_range() {
       in_theme && index($0, end_pattern) {
         exit
       }
-      in_theme && index($0, "dialogTheme: DialogThemeData(") {
+      in_theme && (index($0, "dialogTheme: DialogThemeData(") ||
+                   index($0, "dialogTheme: DialogTheme(")) {
         if (getline > 0) {
           line = $0
           sub(/\r$/, "", line)
