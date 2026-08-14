@@ -76,8 +76,6 @@ validate_patch_inputs() {
 is_complete_patch_state() {
   has_exact_count "$THEME_MATCHES" 'dialogTheme: DialogThemeData(' flutter/lib/common.dart &&
     has_exact_count "$THEME_MATCHES" 'tabBarTheme: const TabBarThemeData(' flutter/lib/common.dart &&
-    has_exact_count "$SINGLE_MATCH" 'backgroundColor: Colors.white,' flutter/lib/common.dart &&
-    has_exact_count "$SINGLE_MATCH" 'backgroundColor: Color(0xFF18191E),' flutter/lib/common.dart &&
     has_exact_count "$SINGLE_MATCH" 'qr_code_scanner_plus: ^2.2.0' flutter/pubspec.yaml &&
     has_exact_count "$SINGLE_MATCH" 'app_links: ^7.2.0' flutter/pubspec.yaml &&
     has_exact_count "$SINGLE_MATCH" 'extended_text: 15.0.2' flutter/pubspec.yaml &&
@@ -100,6 +98,9 @@ is_complete_patch_state() {
       flutter/lib/common.dart
 }
 
+# Dialog colors are invariant across the API-name patch. Validate their
+# structural location in both states instead of a global substring count,
+# which also matches scaffoldBackgroundColor and dialogBackgroundColor.
 is_unpatched_state() {
   has_exact_count "$THEME_MATCHES" 'dialogTheme: DialogTheme(' flutter/lib/common.dart &&
     has_exact_count "$THEME_MATCHES" 'tabBarTheme: const TabBarTheme(' flutter/lib/common.dart &&
@@ -111,14 +112,18 @@ is_unpatched_state() {
     has_exact_count "$SINGLE_MATCH" 'flutter_plugin_android_lifecycle: 2.0.26' flutter/pubspec.yaml &&
     has_exact_count "$NO_MATCHES" 'dialogTheme: DialogThemeData(' flutter/lib/common.dart &&
     has_exact_count "$NO_MATCHES" 'tabBarTheme: const TabBarThemeData(' flutter/lib/common.dart &&
-    has_exact_count "$NO_MATCHES" 'backgroundColor: Colors.white,' flutter/lib/common.dart &&
-    has_exact_count "$NO_MATCHES" 'backgroundColor: Color(0xFF18191E),' flutter/lib/common.dart &&
     has_exact_count "$NO_MATCHES" 'qr_code_scanner_plus: ^2.2.0' flutter/pubspec.yaml &&
     has_exact_count "$NO_MATCHES" 'app_links: ^7.2.0' flutter/pubspec.yaml &&
     has_exact_count "$NO_MATCHES" 'extended_text: 15.0.2' flutter/pubspec.yaml &&
     has_exact_count "$NO_MATCHES" 'sqflite: ^2.4.3' flutter/pubspec.yaml &&
     has_exact_count "$NO_MATCHES" 'google_fonts: ^8.1.0' flutter/pubspec.yaml &&
-    has_exact_count "$NO_MATCHES" 'flutter_plugin_android_lifecycle: 2.0.35' flutter/pubspec.yaml
+    has_exact_count "$NO_MATCHES" 'flutter_plugin_android_lifecycle: 2.0.35' flutter/pubspec.yaml &&
+    has_dialog_background_in_theme_range 'static ThemeData lightTheme = ThemeData(' \
+      'static ThemeData darkTheme = ThemeData(' 'backgroundColor: Colors.white,' \
+      flutter/lib/common.dart &&
+    has_dialog_background_in_theme_range 'static ThemeData darkTheme = ThemeData(' \
+      'scrollbarTheme: scrollbarThemeDark,' 'backgroundColor: Color(0xFF18191E),' \
+      flutter/lib/common.dart
 }
 
 if ! validate_patch_inputs; then
