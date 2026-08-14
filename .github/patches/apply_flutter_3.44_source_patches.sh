@@ -78,12 +78,20 @@ is_complete_patch_state() {
     has_exact_count "$THEME_MATCHES" 'tabBarTheme: const TabBarThemeData(' flutter/lib/common.dart &&
     has_exact_count "$SINGLE_MATCH" 'backgroundColor: Colors.white,' flutter/lib/common.dart &&
     has_exact_count "$SINGLE_MATCH" 'backgroundColor: Color(0xFF18191E),' flutter/lib/common.dart &&
+    has_exact_count "$SINGLE_MATCH" 'qr_code_scanner_plus: ^2.2.0' flutter/pubspec.yaml &&
+    has_exact_count "$SINGLE_MATCH" 'app_links: ^7.2.0' flutter/pubspec.yaml &&
     has_exact_count "$SINGLE_MATCH" 'extended_text: 15.0.2' flutter/pubspec.yaml &&
+    has_exact_count "$SINGLE_MATCH" 'sqflite: ^2.4.3' flutter/pubspec.yaml &&
     has_exact_count "$SINGLE_MATCH" 'google_fonts: ^8.1.0' flutter/pubspec.yaml &&
+    has_exact_count "$SINGLE_MATCH" 'flutter_plugin_android_lifecycle: 2.0.35' flutter/pubspec.yaml &&
     has_exact_count "$NO_MATCHES" 'dialogTheme: DialogTheme(' flutter/lib/common.dart &&
     has_exact_count "$NO_MATCHES" 'tabBarTheme: const TabBarTheme(' flutter/lib/common.dart &&
+    has_exact_count "$NO_MATCHES" 'qr_code_scanner_plus: ^2.0.14' flutter/pubspec.yaml &&
+    has_exact_count "$NO_MATCHES" 'app_links: ^6.4.1' flutter/pubspec.yaml &&
     has_exact_count "$NO_MATCHES" 'extended_text: 14.0.0' flutter/pubspec.yaml &&
+    has_exact_count "$NO_MATCHES" 'sqflite: ^2.4.1' flutter/pubspec.yaml &&
     has_exact_count "$NO_MATCHES" 'google_fonts: ^6.2.1' flutter/pubspec.yaml &&
+    has_exact_count "$NO_MATCHES" 'flutter_plugin_android_lifecycle: 2.0.26' flutter/pubspec.yaml &&
     has_dialog_background_in_theme_range 'static ThemeData lightTheme = ThemeData(' \
       'static ThemeData darkTheme = ThemeData(' 'backgroundColor: Colors.white,' \
       flutter/lib/common.dart &&
@@ -95,14 +103,22 @@ is_complete_patch_state() {
 is_unpatched_state() {
   has_exact_count "$THEME_MATCHES" 'dialogTheme: DialogTheme(' flutter/lib/common.dart &&
     has_exact_count "$THEME_MATCHES" 'tabBarTheme: const TabBarTheme(' flutter/lib/common.dart &&
+    has_exact_count "$SINGLE_MATCH" 'qr_code_scanner_plus: ^2.0.14' flutter/pubspec.yaml &&
+    has_exact_count "$SINGLE_MATCH" 'app_links: ^6.4.1' flutter/pubspec.yaml &&
     has_exact_count "$SINGLE_MATCH" 'extended_text: 14.0.0' flutter/pubspec.yaml &&
+    has_exact_count "$SINGLE_MATCH" 'sqflite: ^2.4.1' flutter/pubspec.yaml &&
     has_exact_count "$SINGLE_MATCH" 'google_fonts: ^6.2.1' flutter/pubspec.yaml &&
+    has_exact_count "$SINGLE_MATCH" 'flutter_plugin_android_lifecycle: 2.0.26' flutter/pubspec.yaml &&
     has_exact_count "$NO_MATCHES" 'dialogTheme: DialogThemeData(' flutter/lib/common.dart &&
     has_exact_count "$NO_MATCHES" 'tabBarTheme: const TabBarThemeData(' flutter/lib/common.dart &&
     has_exact_count "$NO_MATCHES" 'backgroundColor: Colors.white,' flutter/lib/common.dart &&
     has_exact_count "$NO_MATCHES" 'backgroundColor: Color(0xFF18191E),' flutter/lib/common.dart &&
+    has_exact_count "$NO_MATCHES" 'qr_code_scanner_plus: ^2.2.0' flutter/pubspec.yaml &&
+    has_exact_count "$NO_MATCHES" 'app_links: ^7.2.0' flutter/pubspec.yaml &&
     has_exact_count "$NO_MATCHES" 'extended_text: 15.0.2' flutter/pubspec.yaml &&
-    has_exact_count "$NO_MATCHES" 'google_fonts: ^8.1.0' flutter/pubspec.yaml
+    has_exact_count "$NO_MATCHES" 'sqflite: ^2.4.3' flutter/pubspec.yaml &&
+    has_exact_count "$NO_MATCHES" 'google_fonts: ^8.1.0' flutter/pubspec.yaml &&
+    has_exact_count "$NO_MATCHES" 'flutter_plugin_android_lifecycle: 2.0.35' flutter/pubspec.yaml
 }
 
 if ! validate_patch_inputs; then
@@ -133,16 +149,10 @@ sed -i 's/sqflite: \^2.4.1/sqflite: ^2.4.3/' flutter/pubspec.yaml
 sed -i 's/google_fonts: \^6.2.1/google_fonts: ^8.1.0/' flutter/pubspec.yaml
 sed -i 's/flutter_plugin_android_lifecycle: 2.0.26/flutter_plugin_android_lifecycle: 2.0.35/' flutter/pubspec.yaml
 
-# Fail loudly if any expected string drifted, so we never silently build unpatched:
-grep -qF 'dialogTheme: DialogThemeData(' flutter/lib/common.dart
-grep -qF 'tabBarTheme: const TabBarThemeData(' flutter/lib/common.dart
-grep -qF 'backgroundColor: Colors.white,' flutter/lib/common.dart
-grep -qF 'backgroundColor: Color(0xFF18191E),' flutter/lib/common.dart
-grep -qF 'qr_code_scanner_plus: ^2.2.0' flutter/pubspec.yaml
-grep -qF 'app_links: ^7.2.0' flutter/pubspec.yaml
-grep -qF 'extended_text: 15.0.2' flutter/pubspec.yaml
-grep -qF 'sqflite: ^2.4.3' flutter/pubspec.yaml
-grep -qF 'google_fonts: ^8.1.0' flutter/pubspec.yaml
-grep -qF 'flutter_plugin_android_lifecycle: 2.0.35' flutter/pubspec.yaml
+# Fail loudly if any expected substitution did not produce the complete state.
+if ! is_complete_patch_state; then
+  echo "Flutter 3.44 source patches did not produce the expected state." >&2
+  exit 1
+fi
 
 git --no-pager diff -- flutter/lib/common.dart flutter/pubspec.yaml

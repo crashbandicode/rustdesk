@@ -4338,6 +4338,9 @@ class FFI {
   /// Close the remote session.
   Future<void> close({bool closeSession = true}) async {
     closed = true;
+    if (isWeb) {
+      platformFFI.clearVideoFrameCallback();
+    }
     if (identical(_instancesBySession[sessionId.toString()], this)) {
       _instancesBySession.remove(sessionId.toString());
     }

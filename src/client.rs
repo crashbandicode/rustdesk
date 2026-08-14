@@ -539,6 +539,7 @@ impl Client {
             udp_port: udp_nat_port as _,
             force_relay: interface.is_force_relay(),
             socket_addr_v6: ipv6.1.unwrap_or_default(),
+            switch_code,
             ice_srflx,
             ..Default::default()
         });
@@ -893,6 +894,7 @@ impl Client {
                 log::info!(
                     "direct {typ} secure handshake failed; retrying via relay: {direct_error}"
                 );
+                let switch_code = interface.get_switch_code();
                 conn = Self::request_relay(
                     peer_id,
                     relay_server.to_owned(),
@@ -901,6 +903,7 @@ impl Client {
                     key,
                     token,
                     conn_type,
+                    &switch_code,
                 )
                 .await
                 .with_context(|| {
