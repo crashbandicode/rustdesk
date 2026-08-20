@@ -21,6 +21,7 @@ class PowerProfiler with WidgetsBindingObserver {
 
   bool _started = false;
   bool _enabled = false;
+  bool _frameCallbackInstalled = false;
   AppLifecycleState? _lifecycleState;
   int _frameCount = 0;
   int _buildMicros = 0;
@@ -42,7 +43,7 @@ class PowerProfiler with WidgetsBindingObserver {
       key: kOptionPowerProfiling,
       value: value ? 'Y' : 'N',
     );
-    instance._enabled = value;
+    instance._setCachedEnabled(value);
     if (value) {
       instance.start();
       await instance.sampleNow(reason: 'local_toggle');
@@ -52,10 +53,9 @@ class PowerProfiler with WidgetsBindingObserver {
   void start() {
     if (_started) return;
     _started = true;
-    _enabled = enabled;
+    _setCachedEnabled(enabled);
     _lifecycleState = WidgetsBinding.instance.lifecycleState;
     WidgetsBinding.instance.addObserver(this);
-    SchedulerBinding.instance.addTimingsCallback(_recordFrameTimings);
     Timer.periodic(_sampleInterval, (_) => unawaited(sampleNow()));
     Future<void>.delayed(const Duration(seconds: 10), () async {
       if (_started && enabled) await sampleNow(reason: 'startup');
@@ -96,7 +96,7 @@ class PowerProfiler with WidgetsBindingObserver {
   }
 
   Future<void> sampleNow({String reason = 'periodic'}) async {
-    _enabled = enabled;
+    _setCachedEnabled(enabled);
     if (!_enabled) {
       _resetFrames();
       return;
@@ -140,7 +140,6 @@ class PowerProfiler with WidgetsBindingObserver {
   }
 
   void _recordFrameTimings(List<FrameTiming> timings) {
-    if (!_enabled) return;
     for (final timing in timings) {
       final build = timing.buildDuration.inMicroseconds;
       final raster = timing.rasterDuration.inMicroseconds;
@@ -151,6 +150,18 @@ class PowerProfiler with WidgetsBindingObserver {
       if (total > _worstFrameMicros) _worstFrameMicros = total;
       if (total > 16667) _over16ms += 1;
       if (total > 33333) _over33ms += 1;
+    }
+  }
+
+  void _setCachedEnabled(bool value) {
+    _enabled = value;
+    if (value && !_frameCallbackInstalled) {
+      SchedulerBinding.instance.addTimingsCallback(_recordFrameTimings);
+      _frameCallbackInstalled = true;
+    } else if (!value && _frameCallbackInstalled) {
+      SchedulerBinding.instance.removeTimingsCallback(_recordFrameTimings);
+      _frameCallbackInstalled = false;
+      _resetFrames();
     }
   }
 
