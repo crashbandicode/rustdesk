@@ -20,6 +20,7 @@ class PowerProfiler with WidgetsBindingObserver {
   static const _qualityFreshness = Duration(minutes: 2);
 
   bool _started = false;
+  bool _enabled = false;
   AppLifecycleState? _lifecycleState;
   int _frameCount = 0;
   int _buildMicros = 0;
@@ -41,6 +42,7 @@ class PowerProfiler with WidgetsBindingObserver {
       key: kOptionPowerProfiling,
       value: value ? 'Y' : 'N',
     );
+    instance._enabled = value;
     if (value) {
       instance.start();
       await instance.sampleNow(reason: 'local_toggle');
@@ -50,6 +52,7 @@ class PowerProfiler with WidgetsBindingObserver {
   void start() {
     if (_started) return;
     _started = true;
+    _enabled = enabled;
     _lifecycleState = WidgetsBinding.instance.lifecycleState;
     WidgetsBinding.instance.addObserver(this);
     SchedulerBinding.instance.addTimingsCallback(_recordFrameTimings);
@@ -65,7 +68,7 @@ class PowerProfiler with WidgetsBindingObserver {
   }
 
   void recordQuality(String peerId, Map<String, dynamic> event) {
-    if (!enabled || peerId.isEmpty) return;
+    if (!_enabled || peerId.isEmpty) return;
     const keys = <String>{
       'speed',
       'fps',
@@ -93,7 +96,8 @@ class PowerProfiler with WidgetsBindingObserver {
   }
 
   Future<void> sampleNow({String reason = 'periodic'}) async {
-    if (!enabled) {
+    _enabled = enabled;
+    if (!_enabled) {
       _resetFrames();
       return;
     }
@@ -136,7 +140,7 @@ class PowerProfiler with WidgetsBindingObserver {
   }
 
   void _recordFrameTimings(List<FrameTiming> timings) {
-    if (!enabled) return;
+    if (!_enabled) return;
     for (final timing in timings) {
       final build = timing.buildDuration.inMicroseconds;
       final raster = timing.rasterDuration.inMicroseconds;
