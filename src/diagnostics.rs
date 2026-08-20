@@ -179,8 +179,8 @@ pub fn converged_power_profiling_enabled(local_enabled: bool, peer_enabled: bool
 pub fn set_power_profiling_enabled(enabled: bool, source: &str, remote_peer: Option<&str>) -> bool {
     ensure_power_profiler_started();
     let was_enabled = is_power_profiling_enabled();
-    let needs_started_at =
-        enabled && Config::get_option(POWER_PROFILING_STARTED_AT_OPTION).is_empty();
+    let needs_started_at = enabled
+        && (!was_enabled || Config::get_option(POWER_PROFILING_STARTED_AT_OPTION).is_empty());
     if enabled == was_enabled && !needs_started_at {
         return enabled;
     }
@@ -221,12 +221,10 @@ fn initialize_power_profile_default() {
                 POWER_PROFILING_SOURCE_OPTION.to_owned(),
                 "profiling-build".to_owned(),
             );
-            if Config::get_option(POWER_PROFILING_STARTED_AT_OPTION).is_empty() {
-                Config::set_option(
-                    POWER_PROFILING_STARTED_AT_OPTION.to_owned(),
-                    now_millis().to_string(),
-                );
-            }
+            Config::set_option(
+                POWER_PROFILING_STARTED_AT_OPTION.to_owned(),
+                now_millis().to_string(),
+            );
         }
     });
 }
@@ -236,7 +234,7 @@ fn power_profile_loop() {
 
     let pid = Pid::from_u32(std::process::id());
     let mut system = System::new();
-    system.refresh_processes();
+    system.refresh_process(pid);
     loop {
         let enabled = is_power_profiling_enabled();
         thread::sleep(if enabled {
@@ -247,7 +245,7 @@ fn power_profile_loop() {
         if !is_power_profiling_enabled() {
             continue;
         }
-        system.refresh_processes();
+        system.refresh_process(pid);
         let Some(process) = system.process(pid) else {
             continue;
         };
