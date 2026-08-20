@@ -167,6 +167,40 @@ class Peer {
   }
 }
 
+/// Fill only missing display identity from another representation of a peer.
+///
+/// The accessible-devices API can return a live ID/status before its optional
+/// `info` object is populated. Recent sessions and address books often already
+/// know the platform and friendly identity. Keep the API record authoritative
+/// where it has values, and never copy passwords, hashes, tags, or connection
+/// policy across models.
+bool mergeMissingPeerDisplayMetadata(
+  Peer target,
+  Iterable<Peer> knownPeers,
+) {
+  var changed = false;
+
+  String fill(String current, String candidate) {
+    if (current.isEmpty && candidate.isNotEmpty) {
+      changed = true;
+      return candidate;
+    }
+    return current;
+  }
+
+  for (final known in knownPeers) {
+    if (known.id != target.id || identical(known, target)) {
+      continue;
+    }
+    target.platform = fill(target.platform, known.platform);
+    target.hostname = fill(target.hostname, known.hostname);
+    target.username = fill(target.username, known.username);
+    target.alias = fill(target.alias, known.alias);
+    target.loginName = fill(target.loginName, known.loginName);
+  }
+  return changed;
+}
+
 enum UpdateEvent { online, load }
 
 typedef GetInitPeers = RxList<Peer> Function();

@@ -8,6 +8,7 @@ import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_hbb/common/formatter/id_formatter.dart';
+import 'package:flutter_hbb/common/platform_icon.dart';
 import 'package:flutter_hbb/desktop/widgets/refresh_wrapper.dart';
 import 'package:flutter_hbb/desktop/widgets/tabbar_widget.dart';
 import 'package:flutter_hbb/main.dart';
@@ -1711,18 +1712,15 @@ Future<bool> matchPeer(
 
 /// Get the image for the current [platform].
 Widget getPlatformImage(String platform, {double size = 50}) {
-  if (platform.isEmpty) {
-    return Container(width: size, height: size);
-  }
-  if (platform == kPeerPlatformMacOS) {
-    platform = 'mac';
-  } else if (platform != kPeerPlatformLinux &&
-      platform != kPeerPlatformAndroid) {
-    platform = 'win';
-  } else {
-    platform = platform.toLowerCase();
-  }
-  return SvgPicture.asset('assets/$platform.svg', height: size, width: size);
+  final asset = peerPlatformIconAsset(platform);
+  return SvgPicture.asset(
+    'assets/$asset.svg',
+    height: size,
+    width: size,
+    colorFilter: asset == 'screen'
+        ? const ColorFilter.mode(Colors.white, BlendMode.srcIn)
+        : null,
+  );
 }
 
 class LastWindowPosition {

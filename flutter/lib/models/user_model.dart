@@ -166,6 +166,10 @@ class UserModel {
       gFFI.abModel.pullAb(force: ForcePullAb.listAndCurrent, quiet: false),
       gFFI.groupModel.pull()
     ]);
+    // The two APIs load concurrently. Enrich any partial accessible-device
+    // rows after the address book is available, regardless of which finished
+    // first.
+    gFFI.groupModel.refreshKnownPeerMetadata();
   }
 
   Future<void> logOut({String? apiServer}) async {

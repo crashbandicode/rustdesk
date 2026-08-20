@@ -41,7 +41,10 @@ class GroupModel {
     if (bind.isDisableGroupPanel()) return;
     if (!gFFI.userModel.isLogin || groupLoading.value) return;
     if (gFFI.userModel.networkError.isNotEmpty) return;
-    if (!force && initialized) return;
+    if (!force && initialized) {
+      refreshKnownPeerMetadata();
+      return;
+    }
     if (!quiet) {
       groupLoading.value = true;
       groupLoadError.value = "";
@@ -90,6 +93,7 @@ class GroupModel {
         !deviceGroups.any((d) => d.name == selectedAccessibleItemName.value)) {
       selectedAccessibleItemName.value = '';
     }
+    _mergeKnownPeerMetadata(tmpPeers);
     // recover online
     final oldOnlineIDs = peers.where((e) => e.online).map((e) => e.id).toList();
     peers.value = tmpPeers;
@@ -99,6 +103,37 @@ class GroupModel {
         .toList();
     groupLoadError.value = '';
     _callbackPeerUpdate();
+  }
+
+  bool _mergeKnownPeerMetadata(List<Peer> targets) {
+    final ffi = parent.target;
+    if (ffi == null || targets.isEmpty) {
+      return false;
+    }
+    final knownPeers = <Peer>[
+      ...peers,
+      ...ffi.abModel.allPeers(),
+      ...ffi.recentPeersModel.peers,
+      ...ffi.favoritePeersModel.peers,
+      ...ffi.lanPeersModel.peers,
+    ];
+    var changed = false;
+    for (final peer in targets) {
+      changed = mergeMissingPeerDisplayMetadata(peer, knownPeers) || changed;
+    }
+    return changed;
+  }
+
+  /// Refresh partial accessible-device rows after the concurrently loaded
+  /// address book/recent-session models become available.
+  bool refreshKnownPeerMetadata() {
+    final changed = _mergeKnownPeerMetadata(peers);
+    if (changed) {
+      peers.refresh();
+      _saveCache();
+      _callbackPeerUpdate();
+    }
+    return changed;
   }
 
   Future<bool> _getDeviceGroups(
@@ -186,9 +221,7 @@ class GroupModel {
         final error = apiResponseError(json);
         if (error != null) {
           if (error == 'Admin required!' ||
-              error
-                  .toString()
-                  .contains('ambiguous column name: status')) {
+              error.toString().contains('ambiguous column name: status')) {
             throw translate('upgrade_rustdesk_server_pro_to_{1.1.10}_tip');
           } else {
             throw error;
