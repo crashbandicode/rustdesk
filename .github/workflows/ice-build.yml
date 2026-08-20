@@ -5,10 +5,18 @@ name: RustDesk fork client build
 #   * Windows x86_64 (Flutter, portable folder)
 #   * Android arm64 (release-signed APK using the stable key in repo secrets)
 # Both are uploaded as workflow artifacts and published as a GitHub Release.
+# The optional power_profile dispatch produces a marked prerelease that uses
+# the same package/signing identity but enables bounded profiling by default.
 # Versions/pins mirror flutter-build.yml + bridge.yml so we match a stock build.
 
 on:
   workflow_dispatch:
+    inputs:
+      power_profile:
+        description: "Build a clearly identified prerelease with power profiling enabled by default"
+        required: false
+        default: false
+        type: boolean
 
 permissions:
   contents: read
@@ -33,6 +41,8 @@ env:
   RUSTDESK_RELEASE_VERSION: "1.4.9-${{ github.run_number }}"
   RUSTDESK_BUILD_FORK: "crashbandicode/rustdesk ICE fork (UNOFFICIAL)"
   RUSTDESK_BUILD_COMMIT: ${{ github.sha }}
+  RUSTDESK_BUILD_FLAVOR: "${{ inputs.power_profile && 'power-profile' || 'normal' }}"
+  RUSTDESK_POWER_PROFILING_DEFAULT: "${{ inputs.power_profile && 'Y' || 'N' }}"
 
 jobs:
   generate-bridge:
@@ -238,6 +248,11 @@ jobs:
           dart analyze --no-fatal-warnings lib/models/group_model.dart
           dart analyze --no-fatal-warnings lib/models/peer_model.dart
           dart analyze --no-fatal-warnings lib/common/platform_icon.dart
+          dart analyze --no-fatal-warnings lib/power_profiler.dart
+          dart analyze --no-fatal-warnings lib/diagnostics.dart
+          dart analyze --no-fatal-warnings lib/mobile/pages/settings_page.dart
+          dart analyze --no-fatal-warnings lib/models/model.dart
+          dart analyze --no-fatal-warnings lib/main.dart
           flutter test test/api_response_test.dart
           flutter test test/peer_metadata_test.dart
           Pop-Location
@@ -300,13 +315,13 @@ jobs:
       - name: Upload Windows portable folder
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: rustdesk-ice-windows-x86_64
+          name: ${{ inputs.power_profile && 'rustdesk-power-profile-windows-x86_64' || 'rustdesk-ice-windows-x86_64' }}
           path: rustdesk
 
       - name: Upload Windows installer
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: rustdesk-ice-windows-installer
+          name: ${{ inputs.power_profile && 'rustdesk-power-profile-windows-installer' || 'rustdesk-ice-windows-installer' }}
           # build.py names this with its own internal version (e.g. rustdesk-1.4.8-install.exe),
           # not env.VERSION, so match by glob.
           path: rustdesk-*-install.exe
@@ -444,6 +459,11 @@ jobs:
           dart analyze --no-fatal-warnings lib/models/group_model.dart
           dart analyze --no-fatal-warnings lib/models/peer_model.dart
           dart analyze --no-fatal-warnings lib/common/platform_icon.dart
+          dart analyze --no-fatal-warnings lib/power_profiler.dart
+          dart analyze --no-fatal-warnings lib/diagnostics.dart
+          dart analyze --no-fatal-warnings lib/mobile/pages/settings_page.dart
+          dart analyze --no-fatal-warnings lib/models/model.dart
+          dart analyze --no-fatal-warnings lib/main.dart
           flutter test test/api_response_test.dart
           flutter test test/peer_metadata_test.dart
           popd
@@ -513,7 +533,7 @@ jobs:
       - name: Upload Android apk
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: rustdesk-ice-android-aarch64
+          name: ${{ inputs.power_profile && 'rustdesk-power-profile-android-aarch64' || 'rustdesk-ice-android-aarch64' }}
           path: ./rustdesk-${{ env.RELEASE_VERSION }}-aarch64.apk
 
   publish-release:
@@ -527,13 +547,13 @@ jobs:
       - name: Download Windows installer
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
-          name: rustdesk-ice-windows-installer
+          name: ${{ inputs.power_profile && 'rustdesk-power-profile-windows-installer' || 'rustdesk-ice-windows-installer' }}
           path: release/windows
 
       - name: Download Android APK
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
-          name: rustdesk-ice-android-aarch64
+          name: ${{ inputs.power_profile && 'rustdesk-power-profile-android-aarch64' || 'rustdesk-ice-android-aarch64' }}
           path: release/android
 
       - name: Prepare release assets
@@ -563,10 +583,18 @@ jobs:
             "release/rustdesk-${RELEASE_VERSION}-aarch64.apk"
             "release/SHA256SUMS.txt"
           )
-          notes="Automated RustDesk ICE fork build from ${GITHUB_SHA}. The Android APK uses the fork's stable signing certificate."
+          if [[ "$RUSTDESK_BUILD_FLAVOR" == "power-profile" ]]; then
+            title="RustDesk ICE ${RELEASE_VERSION} (power profile)"
+            notes="Power-profiling prerelease from ${GITHUB_SHA}. Profiling defaults on, remains user-switchable, and uses bounded rotating telemetry. The Android APK uses the fork's stable signing certificate."
+            create_flags=(--prerelease)
+          else
+            title="RustDesk ICE ${RELEASE_VERSION}"
+            notes="Automated RustDesk ICE fork build from ${GITHUB_SHA}. The Android APK uses the fork's stable signing certificate."
+            create_flags=()
+          fi
           if gh release view "$RELEASE_VERSION" >/dev/null 2>&1; then
             gh release upload "$RELEASE_VERSION" "${assets[@]}" --clobber
-            gh release edit "$RELEASE_VERSION" --title "RustDesk ICE ${RELEASE_VERSION}" --notes "$notes"
+            gh release edit "$RELEASE_VERSION" --title "$title" --notes "$notes"
           else
-            gh release create "$RELEASE_VERSION" "${assets[@]}" --target "$GITHUB_SHA" --title "RustDesk ICE ${RELEASE_VERSION}" --notes "$notes"
+            gh release create "$RELEASE_VERSION" "${assets[@]}" --target "$GITHUB_SHA" --title "$title" --notes "$notes" "${create_flags[@]}"
           fi

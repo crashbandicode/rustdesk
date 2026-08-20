@@ -32,6 +32,8 @@ pub fn core_main() -> Option<Vec<String>> {
     if !crate::common::global_init() {
         return None;
     }
+    #[cfg(feature = "flutter")]
+    crate::diagnostics::ensure_power_profiler_started();
     crate::load_custom_client();
     #[cfg(windows)]
     if !crate::platform::windows::bootstrap() {

@@ -994,10 +994,22 @@ async fn handle(data: Data, stream: &mut Connection) {
             Some(value) => {
                 let _chk = CheckIfRestart::new();
                 let _nat = CheckTestNatType::new();
+                #[cfg(feature = "flutter")]
+                let power_profiling = value
+                    .get(crate::diagnostics::POWER_PROFILING_OPTION)
+                    .cloned();
                 if let Some(v) = value.get("privacy-mode-impl-key") {
                     crate::privacy_mode::switch(v);
                 }
                 Config::set_options(value);
+                #[cfg(feature = "flutter")]
+                if let Some(value) = power_profiling {
+                    crate::diagnostics::set_power_profiling_enabled(
+                        value == "Y",
+                        "local-cli-or-ui",
+                        None,
+                    );
+                }
                 #[cfg(windows)]
                 crate::server::synergy_service::option_changed();
                 allow_err!(stream.send(&Data::Options(None)).await);

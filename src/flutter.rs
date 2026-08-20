@@ -2307,6 +2307,12 @@ pub mod sessions {
         SESSIONS.read().unwrap().values().cloned().collect()
     }
 
+    pub fn broadcast_power_profiling_enabled() {
+        for session in get_sessions() {
+            session.send_power_profiling_enabled();
+        }
+    }
+
     #[inline]
     #[cfg(not(target_os = "ios"))]
     pub fn has_sessions_running(conn_type: ConnType) -> bool {

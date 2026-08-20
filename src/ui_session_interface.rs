@@ -264,6 +264,22 @@ impl<T: InvokeUiSession> Session<T> {
         conn_type == ConnType::PORT_FORWARD || conn_type == ConnType::RDP
     }
 
+    /// Advertise an already-enabled global power profiler to a connected
+    /// remote-control peer. There is intentionally no disabling message:
+    /// profiling state converges with OR semantics across endpoints.
+    pub fn send_power_profiling_enabled(&self) {
+        if !self.is_default() {
+            return;
+        }
+        let mut option = OptionMessage::new();
+        option.power_profiling = option_message::BoolOption::Yes.into();
+        let mut misc = Misc::new();
+        misc.set_option(option);
+        let mut message = Message::new();
+        message.set_misc(misc);
+        self.send(Data::Message(message));
+    }
+
     #[cfg(not(any(target_os = "android", target_os = "ios")))]
     pub fn is_rdp(&self) -> bool {
         self.lc.read().unwrap().conn_type.eq(&ConnType::RDP)

@@ -146,6 +146,8 @@ const String kOptionTouchMode = "touch-mode";
 const String kOptionMouseStartPosition = "mouse-start-position";
 const String kOptionDiagnosticMode = "diagnostic-mode";
 const String kOptionDiagnosticStartedAt = "diagnostic-started-at";
+const String kOptionPowerProfiling = "power-profiling";
+const String kOptionPowerProfilingStartedAt = "power-profiling-started-at";
 const String kOptionPauseSynergyOnIncomingSessions =
     "pause-synergy-on-incoming-sessions";
 const String kOptionTerminalImagePaste = "terminal-image-paste";

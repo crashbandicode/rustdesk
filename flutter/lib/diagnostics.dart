@@ -7,6 +7,7 @@ import 'package:path/path.dart' as path;
 import 'common.dart';
 import 'consts.dart';
 import 'models/platform_model.dart';
+import 'power_profiler.dart';
 
 class DiagnosticBundleResult {
   const DiagnosticBundleResult({
@@ -80,6 +81,13 @@ class DiagnosticSupport {
     if (destination == null) return null;
 
     await event('diagnostic_export_started');
+    final powerStartedMillis = PowerProfiler.captureStartedMillis;
+    final captureCandidates = [captureStartedMillis, powerStartedMillis]
+        .where((value) => value > 0)
+        .toList(growable: false);
+    final exportStartedMillis = captureCandidates.isEmpty
+        ? 0
+        : captureCandidates.reduce((left, right) => left < right ? left : right);
     final metadata = jsonEncode({
       'version': await bind.mainGetVersion(),
       'build_identity': bind.mainGetBuildIdentitySync(),
@@ -89,10 +97,12 @@ class DiagnosticSupport {
       'locale': Platform.localeName,
       'diagnostic_mode_enabled': enabled,
       'capture_started_millis': captureStartedMillis,
+      'power_profiling_enabled': PowerProfiler.enabled,
+      'power_profiling_started_millis': powerStartedMillis,
     });
     final rawResult = await bind.mainExportDiagnosticBundle(
       destination: destination,
-      captureStartedMillis: captureStartedMillis,
+      captureStartedMillis: exportStartedMillis,
       metadataJson: metadata,
     );
     final result = jsonDecode(rawResult) as Map<String, dynamic>;

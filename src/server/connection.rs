@@ -5158,6 +5158,29 @@ impl Connection {
                 let _ = q;
             }
         }
+        #[cfg(any(target_os = "android", target_os = "ios", feature = "flutter"))]
+        {
+            let peer_requested = o.power_profiling.enum_value() == Ok(BoolOption::Yes);
+            if peer_requested {
+                crate::diagnostics::set_power_profiling_enabled(
+                    true,
+                    "remote-peer",
+                    Some(&self.lr.my_id),
+                );
+            }
+            if crate::diagnostics::converged_power_profiling_enabled(
+                crate::diagnostics::is_power_profiling_enabled(),
+                peer_requested,
+            ) {
+                let mut notification = BackNotification::new();
+                notification.power_profiling_enabled = true;
+                let mut misc = Misc::new();
+                misc.set_back_notification(notification);
+                let mut message = Message::new();
+                message.set_misc(misc);
+                self.send(message).await;
+            }
+        }
     }
 
     async fn turn_on_privacy(&mut self, impl_key: String) {
@@ -5970,6 +5993,7 @@ impl Connection {
             && Self::is_bool_option_not_set(option.terminal_persistent)
             && Self::is_bool_option_not_set(option.show_my_cursor)
             && Self::is_bool_option_not_set(option.viewer_backgrounded)
+            && Self::is_bool_option_not_set(option.power_profiling)
     }
 
     fn is_connection_housekeeping_message(msg: &Message) -> bool {
@@ -6105,7 +6129,8 @@ impl Connection {
             && Self::is_bool_option_not_set(option.disable_camera)
             && Self::is_bool_option_not_set(option.terminal_persistent)
             && Self::is_bool_option_not_set(option.show_my_cursor)
-            && Self::is_bool_option_not_set(option.viewer_backgrounded))
+            && Self::is_bool_option_not_set(option.viewer_backgrounded)
+            && Self::is_bool_option_not_set(option.power_profiling))
     }
 
     fn option_has_non_terminal_login_field(option: &OptionMessage) -> bool {
@@ -6126,12 +6151,14 @@ impl Connection {
             || !Self::is_bool_option_not_set(option.disable_camera)
             || !Self::is_bool_option_not_set(option.show_my_cursor)
             || !Self::is_bool_option_not_set(option.viewer_backgrounded)
+            || !Self::is_bool_option_not_set(option.power_profiling)
     }
 
     fn option_has_any_field(option: &OptionMessage) -> bool {
         Self::option_has_non_terminal_login_field(option)
             || !Self::is_bool_option_not_set(option.terminal_persistent)
             || !Self::is_bool_option_not_set(option.viewer_backgrounded)
+            || !Self::is_bool_option_not_set(option.power_profiling)
     }
 
     fn is_bool_option_not_set(option: hbb_common::protobuf::EnumOrUnknown<BoolOption>) -> bool {
@@ -7880,6 +7907,7 @@ mod test {
         option.disable_audio = BoolOption::Yes.into();
         option.block_input = BoolOption::Yes.into();
         option.privacy_mode = BoolOption::Yes.into();
+        option.power_profiling = BoolOption::Yes.into();
 
         let (scoped, violation) =
             Connection::scoped_login_option(AuthConnType::ViewCamera, &option);
@@ -7892,6 +7920,10 @@ mod test {
         assert_eq!(scoped.disable_audio.enum_value(), Ok(BoolOption::Yes));
         assert_eq!(scoped.block_input.enum_value(), Ok(BoolOption::NotSet));
         assert_eq!(scoped.privacy_mode.enum_value(), Ok(BoolOption::NotSet));
+        assert_eq!(
+            scoped.power_profiling.enum_value(),
+            Ok(BoolOption::NotSet)
+        );
 
         let (scoped, violation) =
             Connection::scoped_login_option(AuthConnType::FileTransfer, &option);
@@ -7914,7 +7946,7 @@ mod test {
 
             let mixed_option = option_msg(|o| {
                 set_supported_decoding(o);
-                o.disable_audio = BoolOption::Yes.into();
+                o.power_profiling = BoolOption::Yes.into();
             });
             assert_eq!(
                 Connection::authorized_message_scope_violation(conn_type, &mixed_option),
@@ -7935,6 +7967,7 @@ mod test {
         option.disable_clipboard = BoolOption::Yes.into();
         option.enable_file_transfer = BoolOption::Yes.into();
         option.terminal_persistent = BoolOption::Yes.into();
+        option.power_profiling = BoolOption::Yes.into();
 
         let (scoped, violation) =
             Connection::scoped_login_option(AuthConnType::ViewCamera, &option);
@@ -7959,6 +7992,10 @@ mod test {
         );
         assert_eq!(
             scoped.terminal_persistent.enum_value(),
+            Ok(BoolOption::NotSet)
+        );
+        assert_eq!(
+            scoped.power_profiling.enum_value(),
             Ok(BoolOption::NotSet)
         );
     }

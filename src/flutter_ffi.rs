@@ -78,6 +78,7 @@ fn initialize(app_dir: &str, custom_client_config: &str) {
         // core_main's init_log does not work for flutter since it is only applied to its load_library in main.c
         hbb_common::init_log(false, "flutter_ffi");
     }
+    crate::diagnostics::ensure_power_profiler_started();
 }
 
 #[inline]
@@ -1005,6 +1006,10 @@ pub fn main_show_option(_key: String) -> SyncReturn<bool> {
 }
 
 pub fn main_set_option(key: String, value: String) {
+    let is_power_profiling = key == crate::diagnostics::POWER_PROFILING_OPTION;
+    if is_power_profiling {
+        crate::diagnostics::set_power_profiling_enabled(value == "Y", "local-ui", None);
+    }
     #[cfg(target_os = "android")]
     {
         let is_permission_option = key.eq(config::keys::OPTION_ENABLE_CLIPBOARD)
@@ -1061,6 +1066,15 @@ pub fn main_set_option(key: String, value: String) {
         crate::common::test_rendezvous_server();
     } else {
         set_option(key, value.clone());
+    }
+    if is_power_profiling {
+        // Desktop IPC replaces the complete option map, so restore profiler
+        // provenance/timestamp metadata after the round trip. On mobile this
+        // is an idempotent no-op.
+        crate::diagnostics::set_power_profiling_enabled(value == "Y", "local-ui", None);
+        if value == "Y" {
+            sessions::broadcast_power_profiling_enabled();
+        }
     }
 }
 
@@ -1145,7 +1159,13 @@ pub fn main_get_build_identity_sync() -> SyncReturn<String> {
         .or(option_env!("GITHUB_SHA"))
         .unwrap_or("local");
     let short_commit = commit.get(..commit.len().min(7)).unwrap_or(commit);
-    SyncReturn(format!("{fork} · commit {short_commit}"))
+    let flavor = option_env!("RUSTDESK_BUILD_FLAVOR").unwrap_or("normal");
+    let flavor = if flavor == "normal" {
+        String::new()
+    } else {
+        format!(" · {flavor}")
+    };
+    SyncReturn(format!("{fork}{flavor} · commit {short_commit}"))
 }
 
 /// Return the native log directory used by the current process.

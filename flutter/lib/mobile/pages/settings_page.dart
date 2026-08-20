@@ -16,6 +16,7 @@ import '../../common/widgets/dialog.dart';
 import '../../common/widgets/login.dart';
 import '../../consts.dart';
 import '../../diagnostics.dart';
+import '../../power_profiler.dart';
 import '../../models/model.dart';
 import '../../models/platform_model.dart';
 import '../outgoing_session_keepalive.dart';
@@ -108,6 +109,7 @@ class _SettingsState extends State<SettingsPage> with WidgetsBindingObserver {
   var _preventSleepWhileConnected = true;
   var _keepSessionsConnectedInBackground = false;
   var _diagnosticMode = false;
+  var _powerProfiling = false;
 
   _SettingsState() {
     _enableAbr = option2bool(
@@ -156,6 +158,7 @@ class _SettingsState extends State<SettingsPage> with WidgetsBindingObserver {
     _showTerminalExtraKeys =
         mainGetLocalBoolOptionSync(kOptionEnableShowTerminalExtraKeys);
     _diagnosticMode = DiagnosticSupport.enabled;
+    _powerProfiling = PowerProfiler.enabled;
   }
 
   @override
@@ -257,7 +260,10 @@ class _SettingsState extends State<SettingsPage> with WidgetsBindingObserver {
       () async {
         final ibs = await checkAndUpdateIgnoreBatteryStatus();
         final sob = await checkAndUpdateStartOnBoot();
-        if (ibs || sob) {
+        final powerProfiling = PowerProfiler.enabled;
+        final powerChanged = powerProfiling != _powerProfiling;
+        _powerProfiling = powerProfiling;
+        if (ibs || sob || powerChanged) {
           setState(() {});
         }
       }();
@@ -1009,6 +1015,20 @@ class _SettingsState extends State<SettingsPage> with WidgetsBindingObserver {
           title: Text(translate('Diagnostics')),
           tiles: [
             SettingsTile.switchTile(
+              title: Text(translate('Power profiling')),
+              description: Text(translate(
+                  'Collect bounded one-minute CPU, memory, I/O, rendering, connection-quality, and Android battery samples. Enabling it on either endpoint enables it on both after they connect.')),
+              initialValue: _powerProfiling,
+              onToggle: (value) async {
+                await PowerProfiler.setEnabled(value);
+                if (!mounted) return;
+                setState(() => _powerProfiling = PowerProfiler.enabled);
+                showToast(translate(value
+                    ? 'Power profiling started'
+                    : 'Power profiling stopped on this device'));
+              },
+            ),
+            SettingsTile.switchTile(
               title: Text(translate('Diagnostic mode')),
               description: Text(translate(
                   'Capture detailed connection events from now until you reproduce the bug. Logs may contain peer IDs, hostnames, IP addresses, and local paths.')),
@@ -1025,7 +1045,7 @@ class _SettingsState extends State<SettingsPage> with WidgetsBindingObserver {
             SettingsTile(
               title: Text(translate('Export diagnostic bundle')),
               description: Text(translate(
-                  'Create a bounded ZIP of recent logs and open the system share sheet. Configuration files, recordings, and clipboard payloads are not added; review log text before sharing.')),
+                  'Create a bounded ZIP of recent logs, including power profiles, and open the system share sheet. Configuration files, recordings, and clipboard payloads are not added; review log text before sharing.')),
               leading: const Icon(Icons.bug_report_outlined),
               onPressed: (context) async {
                 showToast(translate('Creating diagnostic bundle...'));

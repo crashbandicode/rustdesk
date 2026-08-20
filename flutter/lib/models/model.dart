@@ -13,6 +13,7 @@ import 'package:flutter/scheduler.dart';
 import 'package:flutter_hbb/common/widgets/peers_view.dart';
 import 'package:flutter_hbb/consts.dart';
 import 'package:flutter_hbb/diagnostics.dart';
+import 'package:flutter_hbb/power_profiler.dart';
 import 'package:flutter_hbb/models/ab_model.dart';
 import 'package:flutter_hbb/models/chat_model.dart';
 import 'package:flutter_hbb/models/cm_file_model.dart';
@@ -443,6 +444,7 @@ class FfiModel with ChangeNotifier {
       } else if (name == 'on_client_remove') {
         parent.target?.serverModel.onClientRemove(evt);
       } else if (name == 'update_quality_status') {
+        PowerProfiler.instance.recordQuality(peerId, evt);
         parent.target?.qualityMonitorModel.updateQualityStatus(evt);
       } else if (name == 'update_block_input_state') {
         updateBlockInputState(evt, peerId);

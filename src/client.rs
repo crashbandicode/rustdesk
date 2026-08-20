@@ -2526,6 +2526,10 @@ impl LoginConfigHandler {
             Self::apply_background_video_profile(&mut msg);
             *self.custom_fps.lock().unwrap() = Some(1);
         }
+        #[cfg(any(target_os = "android", target_os = "ios", feature = "flutter"))]
+        if crate::diagnostics::is_power_profiling_enabled() {
+            msg.power_profiling = BoolOption::Yes.into();
+        }
         msg.supported_decoding = MessageField::some(self.get_supported_decoding());
         Some(msg)
     }

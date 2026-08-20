@@ -2146,6 +2146,15 @@ impl<T: InvokeUiSession> Remote<T> {
     }
 
     async fn handle_back_notification(&mut self, notification: BackNotification) -> bool {
+        #[cfg(any(target_os = "android", target_os = "ios", feature = "flutter"))]
+        if notification.power_profiling_enabled {
+            let peer_id = self.handler.get_id();
+            crate::diagnostics::set_power_profiling_enabled(
+                true,
+                "remote-peer",
+                Some(&peer_id),
+            );
+        }
         match notification.union {
             Some(back_notification::Union::BlockInputState(state)) => {
                 self.handle_back_msg_block_input(

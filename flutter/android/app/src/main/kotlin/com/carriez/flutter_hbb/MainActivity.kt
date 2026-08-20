@@ -13,11 +13,17 @@ import android.content.ComponentName
 import android.content.ClipData
 import android.content.Context
 import android.content.Intent
+import android.content.IntentFilter
 import android.content.ServiceConnection
 import android.content.ClipboardManager
 import android.os.Bundle
 import android.os.Build
 import android.os.IBinder
+import android.os.BatteryManager
+import android.os.Debug
+import android.os.PowerManager
+import android.os.Process
+import android.os.SystemClock
 import android.util.Log
 import android.view.WindowManager
 import android.media.MediaCodecInfo
@@ -26,6 +32,7 @@ import android.media.MediaCodecInfo.CodecCapabilities.COLOR_FormatYUV420SemiPlan
 import android.media.MediaCodecList
 import android.media.MediaFormat
 import android.net.Uri
+import android.net.TrafficStats
 import android.util.DisplayMetrics
 import androidx.annotation.RequiresApi
 import androidx.core.content.FileProvider
@@ -243,6 +250,9 @@ class MainActivity : FlutterActivity() {
                         result.success(directory.absolutePath)
                     }
                 }
+                "get_power_profile_sample" -> {
+                    result.success(getPowerProfileSample())
+                }
                 START_ACTION -> {
                     if (call.arguments is String) {
                         startAction(context, call.arguments as String)
@@ -392,6 +402,40 @@ class MainActivity : FlutterActivity() {
                 }
             }
         }
+    }
+
+    private fun getPowerProfileSample(): Map<String, Any> {
+        val batteryManager = getSystemService(Context.BATTERY_SERVICE) as BatteryManager
+        val powerManager = getSystemService(Context.POWER_SERVICE) as PowerManager
+        val battery = registerReceiver(null, IntentFilter(Intent.ACTION_BATTERY_CHANGED))
+        val scale = battery?.getIntExtra(BatteryManager.EXTRA_SCALE, 0) ?: 0
+        val level = battery?.getIntExtra(BatteryManager.EXTRA_LEVEL, -1) ?: -1
+        val sample = mutableMapOf<String, Any>(
+            "elapsed_realtime_ms" to SystemClock.elapsedRealtime(),
+            "process_elapsed_cpu_ms" to Process.getElapsedCpuTime(),
+            "process_pss_kb" to Debug.getPss(),
+            "uid_rx_bytes" to TrafficStats.getUidRxBytes(Process.myUid()),
+            "uid_tx_bytes" to TrafficStats.getUidTxBytes(Process.myUid()),
+            "charge_counter_uah" to batteryManager.getIntProperty(BatteryManager.BATTERY_PROPERTY_CHARGE_COUNTER),
+            "current_now_ua" to batteryManager.getIntProperty(BatteryManager.BATTERY_PROPERTY_CURRENT_NOW),
+            "current_average_ua" to batteryManager.getIntProperty(BatteryManager.BATTERY_PROPERTY_CURRENT_AVERAGE),
+            "energy_counter_nwh" to batteryManager.getLongProperty(BatteryManager.BATTERY_PROPERTY_ENERGY_COUNTER),
+            "battery_level" to level,
+            "battery_scale" to scale,
+            "battery_percent" to if (level >= 0 && scale > 0) level * 100.0 / scale else -1.0,
+            "battery_voltage_mv" to (battery?.getIntExtra(BatteryManager.EXTRA_VOLTAGE, -1) ?: -1),
+            "battery_temperature_tenths_c" to (battery?.getIntExtra(BatteryManager.EXTRA_TEMPERATURE, -1) ?: -1),
+            "battery_status" to (battery?.getIntExtra(BatteryManager.EXTRA_STATUS, -1) ?: -1),
+            "battery_plugged" to (battery?.getIntExtra(BatteryManager.EXTRA_PLUGGED, 0) ?: 0),
+            "interactive" to powerManager.isInteractive,
+            "power_save_mode" to powerManager.isPowerSaveMode,
+            "device_idle_mode" to powerManager.isDeviceIdleMode,
+            "window_focused" to window.decorView.hasWindowFocus()
+        )
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            sample["thermal_status"] = powerManager.currentThermalStatus
+        }
+        return sample
     }
 
     private fun shareDiagnosticBundle(bundlePath: String, result: MethodChannel.Result) {

@@ -29,6 +29,7 @@ import 'mobile/pages/home_page.dart';
 import 'mobile/pages/server_page.dart';
 import 'mobile/widgets/deploy_dialog.dart';
 import 'models/platform_model.dart';
+import 'power_profiler.dart';
 
 /// Basic window and launch properties.
 int? kWindowId;
@@ -124,6 +125,7 @@ Future<void> initEnv(String appType) async {
   // for convenience, use global FFI on mobile platform
   // focus on multi-ffi on desktop first
   await initGlobalFFI();
+  PowerProfiler.instance.start();
   // await Firebase.initializeApp();
   _registerEventHandler();
   // Update the system theme.
