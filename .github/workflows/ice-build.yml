@@ -232,6 +232,11 @@ jobs:
           dart analyze --no-fatal-warnings lib/mobile/widgets/gesture_help.dart
           dart analyze --no-fatal-warnings lib/common.dart
           dart analyze --no-fatal-warnings lib/update_policy.dart
+          dart analyze --no-fatal-warnings lib/models/api_response.dart
+          dart analyze --no-fatal-warnings lib/models/user_model.dart
+          dart analyze --no-fatal-warnings lib/models/ab_model.dart
+          dart analyze --no-fatal-warnings lib/models/group_model.dart
+          flutter test test/api_response_test.dart
           Pop-Location
 
       - name: Install Rust toolchain
@@ -430,6 +435,11 @@ jobs:
           dart analyze --no-fatal-warnings lib/mobile/widgets/gesture_help.dart
           dart analyze --no-fatal-warnings lib/common.dart
           dart analyze --no-fatal-warnings lib/update_policy.dart
+          dart analyze --no-fatal-warnings lib/models/api_response.dart
+          dart analyze --no-fatal-warnings lib/models/user_model.dart
+          dart analyze --no-fatal-warnings lib/models/ab_model.dart
+          dart analyze --no-fatal-warnings lib/models/group_model.dart
+          flutter test test/api_response_test.dart
           popd
 
       - name: Install Rust toolchain

@@ -9,6 +9,7 @@ import 'package:get/get.dart';
 
 import '../common.dart';
 import '../utils/http_service.dart' as http;
+import 'api_response.dart';
 import 'model.dart';
 import 'platform_model.dart';
 
@@ -87,7 +88,7 @@ class UserModel {
         return;
       }
       final data = json.decode(decode_http_response(response));
-      final error = data['error'];
+      final error = apiResponseError(data);
       if (error != null) {
         // The only failure known to come from the server itself, so the
         // check-your-network tip does not apply. Flag before the message is

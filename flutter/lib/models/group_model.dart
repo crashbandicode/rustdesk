@@ -8,6 +8,7 @@ import 'package:flutter_hbb/models/platform_model.dart';
 import 'package:get/get.dart';
 import 'dart:convert';
 import '../utils/http_service.dart' as http;
+import 'api_response.dart';
 
 class GroupModel {
   final RxBool groupLoading = false.obs;
@@ -123,8 +124,9 @@ class GroupModel {
         _statusCode = resp.statusCode;
         Map<String, dynamic> json =
             _jsonDecodeResp(decode_http_response(resp), resp.statusCode);
-        if (json.containsKey('error')) {
-          throw json['error'];
+        final error = apiResponseError(json);
+        if (error != null) {
+          throw error;
         }
         if (resp.statusCode != 200) {
           throw 'HTTP ${resp.statusCode}';
@@ -181,14 +183,15 @@ class GroupModel {
         _statusCode = resp.statusCode;
         Map<String, dynamic> json =
             _jsonDecodeResp(decode_http_response(resp), resp.statusCode);
-        if (json.containsKey('error')) {
-          if (json['error'] == 'Admin required!' ||
-              json['error']
+        final error = apiResponseError(json);
+        if (error != null) {
+          if (error == 'Admin required!' ||
+              error
                   .toString()
                   .contains('ambiguous column name: status')) {
             throw translate('upgrade_rustdesk_server_pro_to_{1.1.10}_tip');
           } else {
-            throw json['error'];
+            throw error;
           }
         }
         if (resp.statusCode != 200) {
@@ -247,8 +250,9 @@ class GroupModel {
 
         Map<String, dynamic> json =
             _jsonDecodeResp(decode_http_response(resp), resp.statusCode);
-        if (json.containsKey('error')) {
-          throw json['error'];
+        final error = apiResponseError(json);
+        if (error != null) {
+          throw error;
         }
         if (resp.statusCode != 200) {
           throw 'HTTP ${resp.statusCode}';

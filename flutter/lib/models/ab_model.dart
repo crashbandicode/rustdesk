@@ -13,6 +13,7 @@ import 'package:bot_toast/bot_toast.dart';
 
 import '../utils/http_service.dart' as http;
 import '../common.dart';
+import 'api_response.dart';
 
 final syncAbOption = 'sync-ab-with-recent-sessions';
 bool shouldSyncAb() {
@@ -242,8 +243,9 @@ class AbModel {
       }
       Map<String, dynamic> json =
           _jsonDecodeRespMap(decode_http_response(resp), resp.statusCode);
-      if (json.containsKey('error')) {
-        throw json['error'];
+      final error = apiResponseError(json);
+      if (error != null) {
+        throw error;
       }
       if (statusCode != 200) {
         throw 'HTTP $statusCode';
@@ -275,8 +277,9 @@ class AbModel {
       }
       Map<String, dynamic> json =
           _jsonDecodeRespMap(decode_http_response(resp), resp.statusCode);
-      if (json.containsKey('error')) {
-        throw json['error'];
+      final error = apiResponseError(json);
+      if (error != null) {
+        throw error;
       }
       if (statusCode != 200) {
         throw 'HTTP $statusCode';
@@ -324,8 +327,9 @@ class AbModel {
         }
         Map<String, dynamic> json =
             _jsonDecodeRespMap(decode_http_response(resp), resp.statusCode);
-        if (json.containsKey('error')) {
-          throw json['error'];
+        final error = apiResponseError(json);
+        if (error != null) {
+          throw error;
         }
         if (statusCode != 200) {
           throw 'HTTP $statusCode';
@@ -1023,8 +1027,9 @@ class LegacyAb extends BaseAb {
       } else if (resp.body.isNotEmpty) {
         Map<String, dynamic> json =
             _jsonDecodeRespMap(decode_http_response(resp), resp.statusCode);
-        if (json.containsKey('error')) {
-          throw json['error'];
+        final error = apiResponseError(json);
+        if (error != null) {
+          throw error;
         } else if (json.containsKey('data')) {
           try {
             licensedDevices = json['licensed_devices'];
@@ -1073,8 +1078,9 @@ class LegacyAb extends BaseAb {
       } else {
         Map<String, dynamic> json =
             _jsonDecodeRespMap(decode_http_response(resp), resp.statusCode);
-        if (json.containsKey('error')) {
-          throw json['error'];
+        final error = apiResponseError(json);
+        if (error != null) {
+          throw error;
         } else if (resp.statusCode == 200) {
           ret = true;
         } else {
@@ -1456,8 +1462,9 @@ class Ab extends BaseAb {
         statusCode = resp.statusCode;
         Map<String, dynamic> json =
             _jsonDecodeRespMap(decode_http_response(resp), resp.statusCode);
-        if (json.containsKey('error')) {
-          throw json['error'];
+        final error = apiResponseError(json);
+        if (error != null) {
+          throw error;
         }
         if (resp.statusCode != 200) {
           throw 'HTTP ${resp.statusCode}';
