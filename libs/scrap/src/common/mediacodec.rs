@@ -7,11 +7,7 @@ use std::{
     time::Duration,
 };
 
-use crate::ImageFormat;
-use crate::{
-    codec::{EncoderApi, EncoderCfg},
-    CodecFormat, I420ToABGR, I420ToARGB, ImageRgb,
-};
+use crate::{CodecFormat, I420ToABGR, I420ToARGB, ImageFormat, ImageRgb, NV12ToABGR, NV12ToARGB};
 
 /// MediaCodec mime type name
 const H264_MIME_TYPE: &str = "video/avc";
@@ -29,6 +25,11 @@ pub struct MediaCodecDecoder {
     name: String,
 }
 
+pub struct MediaCodecDecoders {
+    pub h264: Option<MediaCodecDecoder>,
+    pub h265: Option<MediaCodecDecoder>,
+}
+
 impl Deref for MediaCodecDecoder {
     type Target = MediaCodec;
 
@@ -38,12 +39,19 @@ impl Deref for MediaCodecDecoder {
 }
 
 impl MediaCodecDecoder {
+    pub fn new_decoders() -> MediaCodecDecoders {
+        MediaCodecDecoders {
+            h264: create_media_codec(H264_MIME_TYPE, MediaCodecDirection::Decoder),
+            h265: create_media_codec(H265_MIME_TYPE, MediaCodecDirection::Decoder),
+        }
+    }
+
     pub fn new(format: CodecFormat) -> Option<MediaCodecDecoder> {
         match format {
             CodecFormat::H264 => create_media_codec(H264_MIME_TYPE, MediaCodecDirection::Decoder),
             CodecFormat::H265 => create_media_codec(H265_MIME_TYPE, MediaCodecDirection::Decoder),
             _ => {
-                log::error!("Unsupported codec format: {}", format);
+                log::error!("Unsupported codec format: {:?}", format);
                 None
             }
         }
@@ -51,8 +59,6 @@ impl MediaCodecDecoder {
 
     // rgb [in/out] fmt and stride must be set in ImageRgb
     pub fn decode(&mut self, data: &[u8], rgb: &mut ImageRgb) -> ResultType<bool> {
-        // take dst_stride into account please
-        let dst_stride = rgb.stride();
         match self.dequeue_input_buffer(Duration::from_millis(10))? {
             Some(mut input_buffer) => {
                 let mut buf = input_buffer.buffer_mut();
@@ -80,48 +86,77 @@ impl MediaCodecDecoder {
                 ))? as usize;
                 let stride = res_format.i32("stride").ok_or(Error::msg(
                     "Failed to dequeue_output_buffer, stride is None",
-                ))?;
+                ))? as usize;
+                let slice_height = res_format
+                    .i32("slice-height")
+                    .filter(|value| *value > 0)
+                    .map(|value| value as usize)
+                    .unwrap_or(h);
+                let color_format = res_format.i32("color-format").unwrap_or(19);
                 let buf = output_buffer.buffer();
                 let bps = 4;
-                let u = buf.len() * 2 / 3;
-                let v = buf.len() * 5 / 6;
-                rgb.raw.resize(h * w * bps, 0);
+                rgb.w = w;
+                rgb.h = h;
+                let dst_align = rgb.align();
+                let bytes_per_row = (w * bps + dst_align - 1) & !(dst_align - 1);
+                rgb.raw.resize(h * bytes_per_row, 0);
                 let y_ptr = buf.as_ptr();
-                let u_ptr = buf[u..].as_ptr();
-                let v_ptr = buf[v..].as_ptr();
+                let y_size = stride * slice_height;
+                if buf.len() < y_size {
+                    bail!("MediaCodec output is smaller than its Y plane");
+                }
                 unsafe {
-                    match rgb.fmt() {
-                        ImageFormat::ARGB => {
-                            I420ToARGB(
+                    match color_format {
+                        19 => {
+                            let chroma_stride = (stride + 1) / 2;
+                            let chroma_height = (slice_height + 1) / 2;
+                            let u_size = chroma_stride * chroma_height;
+                            if buf.len() < y_size + u_size * 2 {
+                                bail!("MediaCodec planar output is truncated");
+                            }
+                            let u_ptr = buf[y_size..].as_ptr();
+                            let v_ptr = buf[y_size + u_size..].as_ptr();
+                            let convert = match rgb.fmt() {
+                                ImageFormat::ARGB => I420ToARGB,
+                                ImageFormat::ABGR => I420ToABGR,
+                                _ => bail!("Unsupported image format"),
+                            };
+                            convert(
                                 y_ptr,
-                                stride,
+                                stride as _,
                                 u_ptr,
-                                stride / 2,
+                                chroma_stride as _,
                                 v_ptr,
-                                stride / 2,
+                                chroma_stride as _,
                                 rgb.raw.as_mut_ptr(),
-                                (w * bps) as _,
+                                bytes_per_row as _,
                                 w as _,
                                 h as _,
                             );
                         }
-                        ImageFormat::ARGB => {
-                            I420ToABGR(
+                        21 => {
+                            let uv_stride = stride;
+                            if buf.len() < y_size + uv_stride * ((slice_height + 1) / 2) {
+                                bail!("MediaCodec semi-planar output is truncated");
+                            }
+                            let uv_ptr = buf[y_size..].as_ptr();
+                            let convert = match rgb.fmt() {
+                                ImageFormat::ARGB => NV12ToARGB,
+                                ImageFormat::ABGR => NV12ToABGR,
+                                _ => bail!("Unsupported image format"),
+                            };
+                            convert(
                                 y_ptr,
-                                stride,
-                                u_ptr,
-                                stride / 2,
-                                v_ptr,
-                                stride / 2,
+                                stride as _,
+                                uv_ptr,
+                                uv_stride as _,
                                 rgb.raw.as_mut_ptr(),
-                                (w * bps) as _,
+                                bytes_per_row as _,
                                 w as _,
                                 h as _,
                             );
                         }
-                        _ => {
-                            bail!("Unsupported image format");
-                        }
+                        _ => bail!("Unsupported MediaCodec color format: {color_format}"),
                     }
                 }
                 self.release_output_buffer(output_buffer, false)?;
