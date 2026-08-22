@@ -39,6 +39,10 @@ impl Deref for MediaCodecDecoder {
 }
 
 impl MediaCodecDecoder {
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
     pub fn new_decoders() -> MediaCodecDecoders {
         MediaCodecDecoders {
             h264: create_media_codec(H264_MIME_TYPE, MediaCodecDirection::Decoder),
@@ -79,14 +83,22 @@ impl MediaCodecDecoder {
                 let res_format = self.output_format();
                 let w = res_format
                     .i32("width")
+                    .filter(|value| *value > 0)
                     .ok_or(Error::msg("Failed to dequeue_output_buffer, width is None"))?
                     as usize;
-                let h = res_format.i32("height").ok_or(Error::msg(
-                    "Failed to dequeue_output_buffer, height is None",
-                ))? as usize;
-                let stride = res_format.i32("stride").ok_or(Error::msg(
-                    "Failed to dequeue_output_buffer, stride is None",
-                ))? as usize;
+                let h = res_format
+                    .i32("height")
+                    .filter(|value| *value > 0)
+                    .ok_or(Error::msg(
+                        "Failed to dequeue_output_buffer, height is None",
+                    ))? as usize;
+                let stride =
+                    res_format
+                        .i32("stride")
+                        .filter(|value| *value > 0)
+                        .ok_or(Error::msg(
+                            "Failed to dequeue_output_buffer, stride is None",
+                        ))? as usize;
                 let slice_height = res_format
                     .i32("slice-height")
                     .filter(|value| *value > 0)
@@ -97,7 +109,7 @@ impl MediaCodecDecoder {
                 let bps = 4;
                 rgb.w = w;
                 rgb.h = h;
-                let dst_align = rgb.align();
+                let dst_align = rgb.align().max(1);
                 let bytes_per_row = (w * bps + dst_align - 1) & !(dst_align - 1);
                 rgb.raw.resize(h * bytes_per_row, 0);
                 let y_ptr = buf.as_ptr();

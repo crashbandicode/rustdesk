@@ -625,8 +625,12 @@ impl Decoder {
             return "vram".to_owned();
         }
         #[cfg(feature = "mediacodec")]
-        if self.h264_media_codec.is_some() || self.h265_media_codec.is_some() {
-            return "mediacodec".to_owned();
+        if let Some(decoder) = self
+            .h264_media_codec
+            .as_ref()
+            .or(self.h265_media_codec.as_ref())
+        {
+            return format!("mediacodec:{}", decoder.name());
         }
         #[cfg(feature = "hwcodec")]
         if let Some(decoder) = self.h264_ram.as_ref().or(self.h265_ram.as_ref()) {
