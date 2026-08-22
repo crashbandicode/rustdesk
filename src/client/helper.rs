@@ -13,6 +13,8 @@ pub struct QualityStatus {
     pub target_bitrate: Option<i32>,
     pub codec_format: Option<CodecFormat>,
     pub chroma: Option<String>,
+    pub decoder_backends: HashMap<usize, String>,
+    pub resolutions: HashMap<usize, String>,
 }
 
 #[inline]

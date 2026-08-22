@@ -380,6 +380,12 @@ class FfiModel with ChangeNotifier {
         handlePlatformAdditions(evt, sessionId, peerId);
       } else if (name == 'connection_ready') {
         final direct = evt['direct'] == 'true';
+        PowerProfiler.instance.recordConnection(
+          sessionId.toString(),
+          peerId,
+          direct: direct,
+          streamType: evt['stream_type']?.toString() ?? '',
+        );
         unawaited(DiagnosticSupport.event('connection_ready', {
           'session_id': sessionId.toString(),
           'peer_id': peerId,
@@ -444,7 +450,7 @@ class FfiModel with ChangeNotifier {
       } else if (name == 'on_client_remove') {
         parent.target?.serverModel.onClientRemove(evt);
       } else if (name == 'update_quality_status') {
-        PowerProfiler.instance.recordQuality(peerId, evt);
+        PowerProfiler.instance.recordQuality(sessionId.toString(), peerId, evt);
         parent.target?.qualityMonitorModel.updateQualityStatus(evt);
       } else if (name == 'update_block_input_state') {
         updateBlockInputState(evt, peerId);

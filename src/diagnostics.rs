@@ -235,6 +235,8 @@ fn power_profile_loop() {
     let pid = Pid::from_u32(std::process::id());
     let mut system = System::new();
     system.refresh_process(pid);
+    #[cfg(any(target_os = "android", target_os = "macos"))]
+    let mut unix_cpu = UnixProcessCpuSampler::new();
     loop {
         let enabled = is_power_profiling_enabled();
         thread::sleep(if enabled {
@@ -249,17 +251,40 @@ fn power_profile_loop() {
         let Some(process) = system.process(pid) else {
             continue;
         };
+        #[cfg(any(target_os = "android", target_os = "macos"))]
+        let cpu_percent = unix_cpu.sample();
+        #[cfg(not(any(target_os = "android", target_os = "macos")))]
+        let cpu_percent = Some(process.cpu_usage());
+        #[cfg(not(any(target_os = "android", target_os = "macos")))]
         let disk = process.disk_usage();
+        #[cfg(not(any(target_os = "android", target_os = "macos")))]
+        let (read_bytes_interval, written_bytes_interval, read_bytes_total, written_bytes_total) = (
+            Some(disk.read_bytes),
+            Some(disk.written_bytes),
+            Some(disk.total_read_bytes),
+            Some(disk.total_written_bytes),
+        );
+        #[cfg(any(target_os = "android", target_os = "macos"))]
+        let (read_bytes_interval, written_bytes_interval, read_bytes_total, written_bytes_total) = (
+            None::<u64>,
+            None::<u64>,
+            None::<u64>,
+            None::<u64>,
+        );
+        #[cfg(target_os = "android")]
+        let process_uptime_seconds = None::<u64>;
+        #[cfg(not(target_os = "android"))]
+        let process_uptime_seconds = Some(process.run_time());
         let fields = json!({
             "role": process_role(),
-            "cpu_percent": process.cpu_usage(),
+            "cpu_percent": cpu_percent,
             "rss_bytes": process.memory(),
             "virtual_memory_bytes": process.virtual_memory(),
-            "read_bytes_interval": disk.read_bytes,
-            "written_bytes_interval": disk.written_bytes,
-            "read_bytes_total": disk.total_read_bytes,
-            "written_bytes_total": disk.total_written_bytes,
-            "process_uptime_seconds": process.run_time(),
+            "read_bytes_interval": read_bytes_interval,
+            "written_bytes_interval": written_bytes_interval,
+            "read_bytes_total": read_bytes_total,
+            "written_bytes_total": written_bytes_total,
+            "process_uptime_seconds": process_uptime_seconds,
             "logical_cpu_count": std::thread::available_parallelism().map(|count| count.get()).unwrap_or(1),
             "incoming_session_count": crate::ui_cm_interface::get_clients_length(),
             "profiling_source": Config::get_option(POWER_PROFILING_SOURCE_OPTION),
@@ -270,6 +295,68 @@ fn power_profile_loop() {
         });
         let _ = write_power_profile_record("power_profile.process_sample", fields);
     }
+}
+
+#[cfg(any(target_os = "android", target_os = "macos"))]
+struct UnixProcessCpuSampler {
+    previous_cpu_micros: Option<u64>,
+    previous_sample: std::time::Instant,
+}
+
+#[cfg(any(target_os = "android", target_os = "macos"))]
+impl UnixProcessCpuSampler {
+    fn new() -> Self {
+        Self {
+            previous_cpu_micros: process_cpu_micros(),
+            previous_sample: std::time::Instant::now(),
+        }
+    }
+
+    fn sample(&mut self) -> Option<f64> {
+        let now = std::time::Instant::now();
+        let wall_micros = now.duration_since(self.previous_sample).as_micros();
+        self.previous_sample = now;
+        let current = match process_cpu_micros() {
+            Some(current) => current,
+            None => {
+                self.previous_cpu_micros = None;
+                return None;
+            }
+        };
+        let previous = self.previous_cpu_micros.replace(current)?;
+        let cpu_micros = current.checked_sub(previous)?;
+        cpu_percent_from_deltas(cpu_micros, wall_micros)
+    }
+}
+
+#[cfg(any(target_os = "android", target_os = "macos", test))]
+fn cpu_percent_from_deltas(cpu_micros: u64, wall_micros: u128) -> Option<f64> {
+    if wall_micros == 0 {
+        return None;
+    }
+    Some(cpu_micros as f64 * 100.0 / wall_micros as f64)
+}
+
+#[cfg(any(target_os = "android", target_os = "macos"))]
+fn process_cpu_micros() -> Option<u64> {
+    use hbb_common::libc;
+    use std::mem::MaybeUninit;
+
+    let mut usage = MaybeUninit::<libc::rusage>::uninit();
+    if unsafe { libc::getrusage(libc::RUSAGE_SELF, usage.as_mut_ptr()) } != 0 {
+        return None;
+    }
+    let usage = unsafe { usage.assume_init() };
+    let user = timeval_micros(usage.ru_utime)?;
+    let system = timeval_micros(usage.ru_stime)?;
+    user.checked_add(system)
+}
+
+#[cfg(any(target_os = "android", target_os = "macos"))]
+fn timeval_micros(value: hbb_common::libc::timeval) -> Option<u64> {
+    let seconds = u64::try_from(value.tv_sec).ok()?;
+    let micros = u64::try_from(value.tv_usec).ok()?;
+    seconds.checked_mul(1_000_000)?.checked_add(micros)
 }
 
 fn process_role() -> &'static str {
@@ -680,6 +767,13 @@ mod tests {
     use super::*;
     use std::io::Read;
     use zip::ZipArchive;
+
+    #[test]
+    fn process_cpu_percent_uses_monotonic_cpu_and_wall_deltas() {
+        assert_eq!(cpu_percent_from_deltas(500_000, 1_000_000), Some(50.0));
+        assert_eq!(cpu_percent_from_deltas(2_000_000, 1_000_000), Some(200.0));
+        assert_eq!(cpu_percent_from_deltas(1, 0), None);
+    }
 
     fn unique_test_dir(name: &str) -> PathBuf {
         std::env::temp_dir().join(format!(

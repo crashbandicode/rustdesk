@@ -404,22 +404,22 @@ class MainActivity : FlutterActivity() {
         }
     }
 
-    private fun getPowerProfileSample(): Map<String, Any> {
+    private fun getPowerProfileSample(): Map<String, Any?> {
         val batteryManager = getSystemService(Context.BATTERY_SERVICE) as BatteryManager
         val powerManager = getSystemService(Context.POWER_SERVICE) as PowerManager
         val battery = registerReceiver(null, IntentFilter(Intent.ACTION_BATTERY_CHANGED))
         val scale = battery?.getIntExtra(BatteryManager.EXTRA_SCALE, 0) ?: 0
         val level = battery?.getIntExtra(BatteryManager.EXTRA_LEVEL, -1) ?: -1
-        val sample = mutableMapOf<String, Any>(
+        val sample = mutableMapOf<String, Any?>(
             "elapsed_realtime_ms" to SystemClock.elapsedRealtime(),
             "process_elapsed_cpu_ms" to Process.getElapsedCpuTime(),
             "process_pss_kb" to Debug.getPss(),
-            "uid_rx_bytes" to TrafficStats.getUidRxBytes(Process.myUid()),
-            "uid_tx_bytes" to TrafficStats.getUidTxBytes(Process.myUid()),
-            "charge_counter_uah" to batteryManager.getIntProperty(BatteryManager.BATTERY_PROPERTY_CHARGE_COUNTER),
-            "current_now_ua" to batteryManager.getIntProperty(BatteryManager.BATTERY_PROPERTY_CURRENT_NOW),
-            "current_average_ua" to batteryManager.getIntProperty(BatteryManager.BATTERY_PROPERTY_CURRENT_AVERAGE),
-            "energy_counter_nwh" to batteryManager.getLongProperty(BatteryManager.BATTERY_PROPERTY_ENERGY_COUNTER),
+            "uid_rx_bytes" to supportedUidBytes(TrafficStats.getUidRxBytes(Process.myUid())),
+            "uid_tx_bytes" to supportedUidBytes(TrafficStats.getUidTxBytes(Process.myUid())),
+            "charge_counter_uah" to supportedBatteryInt(batteryManager, BatteryManager.BATTERY_PROPERTY_CHARGE_COUNTER),
+            "current_now_ua" to supportedBatteryInt(batteryManager, BatteryManager.BATTERY_PROPERTY_CURRENT_NOW),
+            "current_average_ua" to supportedBatteryInt(batteryManager, BatteryManager.BATTERY_PROPERTY_CURRENT_AVERAGE),
+            "energy_counter_nwh" to supportedBatteryLong(batteryManager, BatteryManager.BATTERY_PROPERTY_ENERGY_COUNTER),
             "battery_level" to level,
             "battery_scale" to scale,
             "battery_percent" to if (level >= 0 && scale > 0) level * 100.0 / scale else -1.0,
@@ -436,6 +436,18 @@ class MainActivity : FlutterActivity() {
             sample["thermal_status"] = powerManager.currentThermalStatus
         }
         return sample
+    }
+
+    private fun supportedBatteryInt(manager: BatteryManager, property: Int): Int? {
+        return manager.getIntProperty(property).takeUnless { it == Int.MIN_VALUE }
+    }
+
+    private fun supportedBatteryLong(manager: BatteryManager, property: Int): Long? {
+        return manager.getLongProperty(property).takeUnless { it == Long.MIN_VALUE }
+    }
+
+    private fun supportedUidBytes(value: Long): Long? {
+        return value.takeUnless { it == TrafficStats.UNSUPPORTED.toLong() }
     }
 
     private fun shareDiagnosticBundle(bundlePath: String, result: MethodChannel.Result) {

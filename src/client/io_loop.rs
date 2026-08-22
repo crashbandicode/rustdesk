@@ -339,11 +339,25 @@ impl<T: InvokeUiSession> Remote<T> {
                             } else {
                                 Some(self.video_format.clone())
                             };
+                            let decoder_backends = self.video_threads.iter().filter_map(|(display, thread)| {
+                                thread.decode_profile.read().unwrap().as_ref().map(|profile| {
+                                    (*display, profile.backend.clone())
+                                })
+                            }).collect();
+                            let resolutions = self.video_threads.iter().filter_map(|(display, thread)| {
+                                thread.decode_profile.read().unwrap().as_ref().and_then(|profile| {
+                                    (profile.width > 0 && profile.height > 0).then(|| {
+                                        (*display, format!("{}x{}", profile.width, profile.height))
+                                    })
+                                })
+                            }).collect();
                             self.handler.update_quality_status(QualityStatus {
                                 speed: Some(speed),
                                 fps,
                                 chroma,
                                 codec_format,
+                                decoder_backends,
+                                resolutions,
                                 ..Default::default()
                             });
                         }
@@ -2416,12 +2430,14 @@ impl<T: InvokeUiSession> Remote<T> {
         let (video_sender, video_receiver) = std::sync::mpsc::channel::<MediaData>();
         let decode_fps = Arc::new(RwLock::new(None));
         let frame_count = Arc::new(RwLock::new(0));
+        let decode_profile = Arc::new(RwLock::new(None));
         let discard_queue = Arc::new(RwLock::new(false));
         let video_thread = VideoThread {
             video_queue: video_queue.clone(),
             video_sender,
             decode_fps: decode_fps.clone(),
             frame_count: frame_count.clone(),
+            decode_profile: decode_profile.clone(),
             fps_control: Default::default(),
             discard_queue: discard_queue.clone(),
         };
@@ -2433,6 +2449,7 @@ impl<T: InvokeUiSession> Remote<T> {
             video_queue,
             decode_fps,
             self.chroma.clone(),
+            decode_profile,
             discard_queue,
             move |display: usize,
                   data: &mut scrap::ImageRgb,
@@ -2526,6 +2543,7 @@ struct VideoThread {
     video_sender: MediaSender,
     decode_fps: Arc<RwLock<Option<usize>>>,
     frame_count: Arc<RwLock<usize>>,
+    decode_profile: Arc<RwLock<Option<client::VideoDecodeProfile>>>,
     discard_queue: Arc<RwLock<bool>>,
     fps_control: FpsControl,
 }

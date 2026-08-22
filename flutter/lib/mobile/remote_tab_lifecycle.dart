@@ -1,7 +1,39 @@
 import 'dart:async';
 
+import 'package:flutter/widgets.dart';
+
 typedef MobileSessionLifecycleCallback = void Function();
 typedef MobileModifierReleaseCallback = void Function(String reason);
+
+/// Keeps keyed session subtrees alive when a leading tab is removed.
+class StableMobileSessionStack extends StatelessWidget {
+  const StableMobileSessionStack({
+    super.key,
+    required this.selectedIndex,
+    required this.children,
+  });
+
+  final int selectedIndex;
+  final List<Widget> children;
+
+  @override
+  Widget build(BuildContext context) {
+    return Stack(
+      fit: StackFit.expand,
+      children: [
+        for (var index = 0; index < children.length; index++)
+          Offstage(
+            key: children[index].key,
+            offstage: index != selectedIndex,
+            child: TickerMode(
+              enabled: index == selectedIndex,
+              child: children[index],
+            ),
+          ),
+      ],
+    );
+  }
+}
 
 class MobileInputLifecycleGuard {
   MobileInputLifecycleGuard({
@@ -27,6 +59,21 @@ class MobileInputLifecycleGuard {
   void pause() => _releaseModifiers('app_paused');
 
   void dispose() => _releaseModifiers('session_disposed');
+}
+
+class MobileTabMediaPolicy {
+  MobileTabMediaPolicy({required bool active}) : _active = active;
+
+  bool _active;
+  bool _backgrounded = false;
+
+  bool get throttled => _backgrounded || !_active;
+
+  void setActive(bool active) => _active = active;
+
+  void pause() => _backgrounded = true;
+
+  void resume() => _backgrounded = false;
 }
 
 class MobileSessionCloseCoordinator<T> {

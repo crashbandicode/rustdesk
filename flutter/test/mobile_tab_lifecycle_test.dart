@@ -1,5 +1,47 @@
+import 'package:flutter/widgets.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:flutter_hbb/mobile/remote_tab_lifecycle.dart';
+
+class _SessionProbe extends StatefulWidget {
+  const _SessionProbe(
+      {required super.key, required this.id, required this.log});
+
+  final String id;
+  final List<String> log;
+
+  @override
+  State<_SessionProbe> createState() => _SessionProbeState();
+}
+
+class _SessionProbeState extends State<_SessionProbe> {
+  @override
+  void initState() {
+    super.initState();
+    widget.log.add('init:${widget.id}');
+  }
+
+  @override
+  void dispose() {
+    widget.log.add('dispose:${widget.id}');
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) => Text(widget.id);
+}
+
+Widget _sessionStack(List<String> ids, int selected, List<String> log) {
+  return Directionality(
+    textDirection: TextDirection.ltr,
+    child: StableMobileSessionStack(
+      selectedIndex: selected,
+      children: [
+        for (final id in ids)
+          _SessionProbe(key: ValueKey(id), id: id, log: log),
+      ],
+    ),
+  );
+}
 
 MobileSessionLifecycleTarget _target(String id, List<String> events) {
   return MobileSessionLifecycleTarget(sessionId: id, peerId: 'peer-$id')
@@ -11,6 +53,20 @@ MobileSessionLifecycleTarget _target(String id, List<String> events) {
 }
 
 void main() {
+  testWidgets('removing a leading tab preserves the surviving session state', (
+    tester,
+  ) async {
+    final log = <String>[];
+    await tester.pumpWidget(_sessionStack(['first', 'yoga'], 1, log));
+    expect(log, ['init:first', 'init:yoga']);
+
+    log.clear();
+    await tester.pumpWidget(_sessionStack(['yoga'], 0, log));
+
+    expect(log, ['dispose:first']);
+    expect(find.text('yoga'), findsOneWidget);
+  });
+
   test('mobile input lifecycle releases modifiers at focus boundaries', () {
     final releases = <String>[];
     final guard = MobileInputLifecycleGuard(
@@ -25,6 +81,19 @@ void main() {
     guard.dispose();
 
     expect(releases, ['tab_inactive', 'app_paused', 'session_disposed']);
+  });
+
+  test('inactive and background sessions use the low-power media profile', () {
+    final policy = MobileTabMediaPolicy(active: true);
+
+    expect(policy.throttled, isFalse);
+    policy.setActive(false);
+    expect(policy.throttled, isTrue);
+    policy.pause();
+    policy.setActive(true);
+    expect(policy.throttled, isTrue);
+    policy.resume();
+    expect(policy.throttled, isFalse);
   });
 
   test('closing one tab requests only its native session once', () {

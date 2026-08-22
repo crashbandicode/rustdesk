@@ -3125,6 +3125,13 @@ pub enum MediaData {
 
 pub type MediaSender = mpsc::Sender<MediaData>;
 
+#[derive(Clone, Debug, Default)]
+pub struct VideoDecodeProfile {
+    pub backend: String,
+    pub width: usize,
+    pub height: usize,
+}
+
 /// Start video thread.
 ///
 /// # Arguments
@@ -3137,6 +3144,7 @@ pub fn start_video_thread<F, T>(
     video_queue: Arc<RwLock<ArrayQueue<VideoFrame>>>,
     fps: Arc<RwLock<Option<usize>>>,
     chroma: Arc<RwLock<Option<Chroma>>>,
+    decode_profile: Arc<RwLock<Option<VideoDecodeProfile>>>,
     discard_queue: Arc<RwLock<bool>>,
     video_callback: F,
 ) where
@@ -3155,6 +3163,8 @@ pub fn start_video_thread<F, T>(
         let mut count = 0;
         let mut duration = std::time::Duration::ZERO;
         let mut skip_beginning = 0;
+        let mut profile_dimensions = (0, 0);
+        let mut profile_backend = String::new();
         loop {
             if let Ok(data) = video_receiver.recv() {
                 match data {
@@ -3184,6 +3194,12 @@ pub fn start_video_thread<F, T>(
                         let format = CodecFormat::from(&vf);
                         if video_handler.is_none() {
                             let mut handler = VideoHandler::new(format, display);
+                            *decode_profile.write().unwrap() = Some(VideoDecodeProfile {
+                                backend: handler.decoder.backend_name(),
+                                ..Default::default()
+                            });
+                            profile_dimensions = (0, 0);
+                            profile_backend.clear();
                             let record_state = session.lc.read().unwrap().record_state;
                             let record_permission = session.lc.read().unwrap().record_permission;
                             let id = session.lc.read().unwrap().id.clone();
@@ -3198,6 +3214,21 @@ pub fn start_video_thread<F, T>(
                             let format_changed = handler.decoder.format() != format;
                             match handler.handle_frame(vf, &mut pixelbuffer, &mut tmp_chroma) {
                                 Ok(true) => {
+                                    let dimensions = (handler.rgb.w, handler.rgb.h);
+                                    let backend = handler.decoder.backend_name();
+                                    if format_changed
+                                        || profile_dimensions != dimensions
+                                        || profile_backend != backend
+                                    {
+                                        *decode_profile.write().unwrap() =
+                                            Some(VideoDecodeProfile {
+                                                backend: backend.clone(),
+                                                width: handler.rgb.w,
+                                                height: handler.rgb.h,
+                                            });
+                                        profile_dimensions = dimensions;
+                                        profile_backend = backend;
+                                    }
                                     video_callback(
                                         display,
                                         &mut handler.rgb,
@@ -3264,6 +3295,8 @@ pub fn start_video_thread<F, T>(
                     MediaData::Reset => {
                         if let Some(handler) = video_handler.as_mut() {
                             handler.reset(None);
+                            profile_dimensions = (0, 0);
+                            profile_backend.clear();
                         }
                     }
                     MediaData::RecordScreen(start) => {

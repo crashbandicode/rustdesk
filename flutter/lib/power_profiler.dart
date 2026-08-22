@@ -30,6 +30,7 @@ class PowerProfiler with WidgetsBindingObserver {
   int _over16ms = 0;
   int _over33ms = 0;
   final Map<String, _QualitySnapshot> _quality = {};
+  final Map<String, _MobileSessionSnapshot> _mobileSessions = {};
 
   static bool get enabled =>
       bind.mainGetOptionSync(key: kOptionPowerProfiling) == 'Y';
@@ -67,8 +68,41 @@ class PowerProfiler with WidgetsBindingObserver {
     _lifecycleState = state;
   }
 
-  void recordQuality(String peerId, Map<String, dynamic> event) {
-    if (!_enabled || peerId.isEmpty) return;
+  void registerMobileSession(String sessionId, String peerId, bool active) {
+    if (sessionId.isEmpty || peerId.isEmpty) return;
+    _mobileSessions[sessionId] = _MobileSessionSnapshot(peerId, active);
+  }
+
+  void setMobileSessionActive(String sessionId, bool active) {
+    final session = _mobileSessions[sessionId];
+    if (session != null) session.active = active;
+  }
+
+  void unregisterMobileSession(String sessionId) {
+    _mobileSessions.remove(sessionId);
+  }
+
+  void recordConnection(
+    String sessionId,
+    String peerId, {
+    required bool direct,
+    required String streamType,
+  }) {
+    if (!isMobile || sessionId.isEmpty) return;
+    final session = _mobileSessions.putIfAbsent(
+      sessionId,
+      () => _MobileSessionSnapshot(peerId, false),
+    );
+    session.direct = direct;
+    session.streamType = streamType;
+  }
+
+  void recordQuality(
+    String sessionId,
+    String peerId,
+    Map<String, dynamic> event,
+  ) {
+    if (!_enabled || sessionId.isEmpty || peerId.isEmpty) return;
     const keys = <String>{
       'speed',
       'fps',
@@ -76,6 +110,8 @@ class PowerProfiler with WidgetsBindingObserver {
       'target_bitrate',
       'codec_format',
       'chroma',
+      'decoder_backends',
+      'resolutions',
     };
     final values = <String, Object?>{};
     for (final key in keys) {
@@ -84,7 +120,7 @@ class PowerProfiler with WidgetsBindingObserver {
         values[key] = value.toString();
       }
     }
-    _quality[peerId] = _QualitySnapshot(DateTime.now(), values);
+    _quality[sessionId] = _QualitySnapshot(peerId, DateTime.now(), values);
     if (_quality.length > 8) {
       final oldest = _quality.entries.reduce(
         (left, right) => left.value.updated.isBefore(right.value.updated)
@@ -113,11 +149,34 @@ class PowerProfiler with WidgetsBindingObserver {
       'recent_session_count': _quality.length,
       'recent_sessions': _quality.entries
           .map((entry) => {
-                'peer_id': entry.key,
+                'session_id': entry.key,
+                'peer_id': entry.value.peerId,
                 'age_seconds': now.difference(entry.value.updated).inSeconds,
                 ...entry.value.values,
               })
           .toList(growable: false),
+      'open_mobile_session_count': _mobileSessions.length,
+      'selected_mobile_session_count':
+          _mobileSessions.values.where((session) => session.active).length,
+      'inactive_mobile_session_count':
+          _mobileSessions.values.where((session) => !session.active).length,
+      'mobile_sessions': _mobileSessions.entries.map((entry) {
+        final quality = _quality[entry.key];
+        final session = entry.value;
+        return <String, Object?>{
+          'session_id': entry.key,
+          'peer_id': session.peerId,
+          'active': session.active,
+          'transport': session.direct == null
+              ? 'unknown'
+              : (session.direct! ? 'p2p' : 'relay'),
+          'stream_type': session.streamType,
+          'quality_age_seconds': quality == null
+              ? null
+              : now.difference(quality.updated).inSeconds,
+          if (quality != null) ...quality.values,
+        };
+      }).toList(growable: false),
     };
     if (isAndroid) {
       try {
@@ -190,8 +249,18 @@ class PowerProfiler with WidgetsBindingObserver {
 }
 
 class _QualitySnapshot {
-  const _QualitySnapshot(this.updated, this.values);
+  const _QualitySnapshot(this.peerId, this.updated, this.values);
 
+  final String peerId;
   final DateTime updated;
   final Map<String, Object?> values;
+}
+
+class _MobileSessionSnapshot {
+  _MobileSessionSnapshot(this.peerId, this.active);
+
+  final String peerId;
+  bool active;
+  bool? direct;
+  String streamType = '';
 }

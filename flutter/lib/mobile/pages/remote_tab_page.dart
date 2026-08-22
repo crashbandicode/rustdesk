@@ -646,8 +646,8 @@ class _MobileConnectionTabPageState extends State<MobileConnectionTabPage>
             ),
           ),
           Expanded(
-            child: IndexedStack(
-              index: _selectedIndex,
+            child: StableMobileSessionStack(
+              selectedIndex: _selectedIndex,
               children: [
                 for (var i = 0; i < _sessions.length; i++)
                   () {

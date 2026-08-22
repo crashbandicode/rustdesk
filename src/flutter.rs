@@ -705,6 +705,16 @@ impl InvokeUiSession for FlutterHandler {
                     &status.codec_format.map_or(NULL, |it| it.to_string()),
                 ),
                 ("chroma", &status.chroma.map_or(NULL, |it| it.to_string())),
+                (
+                    "decoder_backends",
+                    &serde_json::ser::to_string(&status.decoder_backends)
+                        .unwrap_or(NULL.to_owned()),
+                ),
+                (
+                    "resolutions",
+                    &serde_json::ser::to_string(&status.resolutions)
+                        .unwrap_or(NULL.to_owned()),
+                ),
             ],
             &[],
         );

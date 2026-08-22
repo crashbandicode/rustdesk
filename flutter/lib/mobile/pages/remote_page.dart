@@ -24,6 +24,7 @@ import '../../models/connection_policy.dart';
 import '../../models/input_model.dart';
 import '../../models/model.dart';
 import '../../models/platform_model.dart';
+import '../../power_profiler.dart';
 import '../../utils/image.dart';
 import '../ime_input_diff.dart';
 import '../keyboard_image_paste.dart';
@@ -91,6 +92,7 @@ class _RemotePageState extends State<RemotePage> {
   Timer? _resumeOverlayTimer;
   bool _awaitingResumeFrame = false;
   late final MobileInputLifecycleGuard _inputLifecycleGuard;
+  late final MobileTabMediaPolicy _mediaPolicy;
   late final MobileKeyboardViewportGuard _keyboardViewportGuard;
 
   final _blockableOverlayState = BlockableOverlayState();
@@ -140,10 +142,16 @@ class _RemotePageState extends State<RemotePage> {
       'active': widget.active,
     }));
     _ffi = FFI(widget.sessionId);
+    PowerProfiler.instance.registerMobileSession(
+      widget.sessionId.toString(),
+      widget.id,
+      widget.active,
+    );
     _inputLifecycleGuard = MobileInputLifecycleGuard(
       active: widget.active,
       releaseModifiers: _releaseMobileInput,
     );
+    _mediaPolicy = MobileTabMediaPolicy(active: widget.active);
     _keyboardViewportGuard = MobileKeyboardViewportGuard(
       onAdjust: () {
         _ffi.canvasModel.saveMobileOffsetBeforeSoftKeyboard();
@@ -182,6 +190,9 @@ class _RemotePageState extends State<RemotePage> {
       });
     }
     if (sessionStarted) {
+      if (_mediaPolicy.throttled) {
+        unawaited(_setBackgroundVideoThrottled(true, reason: 'tab_inactive'));
+      }
       WidgetsBinding.instance.addPostFrameCallback((_) {
         SystemChrome.setEnabledSystemUIMode(SystemUiMode.manual, overlays: []);
         _ffi.dialogManager.showLoading(translate('Connecting...'),
@@ -237,7 +248,14 @@ class _RemotePageState extends State<RemotePage> {
       'active': widget.active,
     }));
     _inputLifecycleGuard.setActive(widget.active);
+    _mediaPolicy.setActive(widget.active);
     _ffi.imageModel.setPresentationActive(widget.active);
+    PowerProfiler.instance
+        .setMobileSessionActive(widget.sessionId.toString(), widget.active);
+    unawaited(_setBackgroundVideoThrottled(
+      _mediaPolicy.throttled,
+      reason: widget.active ? 'tab_selected' : 'tab_inactive',
+    ));
     _updateKeyboardViewport(keyboardVisibilityController.isVisible);
     if (widget.active) {
       _physicalFocusNode.requestFocus();
@@ -262,6 +280,7 @@ class _RemotePageState extends State<RemotePage> {
       'active': widget.active,
     }));
     widget.lifecycleTarget.detach();
+    PowerProfiler.instance.unregisterMobileSession(widget.sessionId.toString());
     _resumeOverlayTimer?.cancel();
     _ffi.imageModel.removeCallbackOnFrame(_handleIncomingFrame);
     _inputLifecycleGuard.dispose();
@@ -306,13 +325,14 @@ class _RemotePageState extends State<RemotePage> {
   }
 
   void _handleAppPaused() {
+    _mediaPolicy.pause();
     _resumeOverlayTimer?.cancel();
     _awaitingResumeFrame = false;
     _inputLifecycleGuard.pause();
     final allowBackgroundRecovery = mobileOutgoingSessionKeepaliveEnabled();
     // Always tell the host the viewer is backgrounded so Synergy can resume
     // even when keepalive (and thus video throttle recovery) is disabled.
-    unawaited(_setBackgroundVideoThrottled(true));
+    unawaited(_setBackgroundVideoThrottled(true, reason: 'app_paused'));
     _ffi.ffiModel
         .onMobileAppPaused(allowBackgroundRecovery: allowBackgroundRecovery);
     unawaited(DiagnosticSupport.event('mobile_session_lifecycle_applied', {
@@ -325,7 +345,10 @@ class _RemotePageState extends State<RemotePage> {
     }));
   }
 
-  Future<void> _setBackgroundVideoThrottled(bool enabled) async {
+  Future<void> _setBackgroundVideoThrottled(
+    bool enabled, {
+    required String reason,
+  }) async {
     try {
       await bind.sessionSetBackgroundVideoThrottled(
         sessionId: sessionId,
@@ -338,6 +361,7 @@ class _RemotePageState extends State<RemotePage> {
         'fps': enabled ? 1 : 'configured',
         'quality': 'configured',
         'audio_suspended': enabled,
+        'reason': reason,
       });
     } catch (error) {
       debugPrint('Failed to update background video profile: $error');
@@ -345,6 +369,7 @@ class _RemotePageState extends State<RemotePage> {
         'session_id': widget.sessionId.toString(),
         'peer_id': widget.id,
         'enabled': enabled,
+        'reason': reason,
         'error': error.toString(),
       });
     }
@@ -380,6 +405,7 @@ class _RemotePageState extends State<RemotePage> {
   }
 
   Future<void> _handleAppResumed({bool explicitHealthCheck = false}) async {
+    _mediaPolicy.resume();
     _resumeOverlayTimer?.cancel();
     if (mounted) {
       setState(() => _awaitingResumeFrame = true);
@@ -389,7 +415,10 @@ class _RemotePageState extends State<RemotePage> {
     // Restore the persisted foreground media profile before probing or
     // reconnecting. Otherwise a background reconnect can carry the 1 FPS
     // throttle into the newly established foreground session.
-    await _setBackgroundVideoThrottled(false);
+    await _setBackgroundVideoThrottled(
+      _mediaPolicy.throttled,
+      reason: widget.active ? 'app_resumed' : 'tab_inactive',
+    );
     if (!mounted) return;
     if (widget.active) trySyncClipboard();
     final reconnectDispatched = _ffi.ffiModel.onMobileAppResumed();
