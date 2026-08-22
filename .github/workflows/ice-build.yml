@@ -250,6 +250,7 @@ jobs:
           dart analyze --no-fatal-warnings lib/models/group_model.dart
           dart analyze --no-fatal-warnings lib/models/peer_model.dart
           dart analyze --no-fatal-warnings lib/common/platform_icon.dart
+          dart analyze --no-fatal-warnings lib/common/remembered_display.dart
           dart analyze --no-fatal-warnings lib/power_profiler.dart
           dart analyze --no-fatal-warnings lib/diagnostics.dart
           dart analyze --no-fatal-warnings lib/mobile/pages/settings_page.dart
@@ -258,6 +259,7 @@ jobs:
           flutter test test/api_response_test.dart
           flutter test test/peer_metadata_test.dart
           flutter test test/mobile_tab_lifecycle_test.dart
+          flutter test test/remembered_display_test.dart
           Pop-Location
 
       - name: Install Rust toolchain
@@ -465,6 +467,7 @@ jobs:
           dart analyze --no-fatal-warnings lib/models/group_model.dart
           dart analyze --no-fatal-warnings lib/models/peer_model.dart
           dart analyze --no-fatal-warnings lib/common/platform_icon.dart
+          dart analyze --no-fatal-warnings lib/common/remembered_display.dart
           dart analyze --no-fatal-warnings lib/power_profiler.dart
           dart analyze --no-fatal-warnings lib/diagnostics.dart
           dart analyze --no-fatal-warnings lib/mobile/pages/settings_page.dart
@@ -473,6 +476,7 @@ jobs:
           flutter test test/api_response_test.dart
           flutter test test/peer_metadata_test.dart
           flutter test test/mobile_tab_lifecycle_test.dart
+          flutter test test/remembered_display_test.dart
           popd
 
       - name: Install Rust toolchain

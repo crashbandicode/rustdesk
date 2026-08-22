@@ -29,6 +29,7 @@ import 'package:flutter_hbb/models/state_model.dart';
 import 'package:flutter_hbb/models/desktop_render_texture.dart';
 import 'package:flutter_hbb/models/terminal_model.dart';
 import 'package:flutter_hbb/common/shared_state.dart';
+import 'package:flutter_hbb/common/remembered_display.dart';
 import 'package:flutter_hbb/utils/multi_window_manager.dart';
 import 'package:flutter_hbb/utils/http_service.dart' as http;
 import 'package:tuple/tuple.dart';
@@ -1697,7 +1698,20 @@ class FfiModel with ChangeNotifier {
       }
       // After reconnecting, restore the last selected monitor once the canvas is ready.
       // Switching earlier can offset the view if the monitor sizes differ.
-      final last = lastUserDisplay;
+      final remembered = RememberedRemoteDisplay.decode(
+        bind.mainGetPeerFlutterOptionSync(
+          id: peerId,
+          k: kPeerFlutterOptionRememberedDisplay,
+        ),
+      );
+      final last = remembered == null
+          ? lastUserDisplay
+          : resolveRememberedRemoteDisplay(
+              remembered,
+              _pi.displays.map((display) => display.remoteIdentity).toList(),
+              allDisplaysValue: kAllDisplayValue,
+            );
+      lastUserDisplay = last;
       pendingMonitorRestore = (!isCache &&
               last != null &&
               last != currentDisplay &&
@@ -1890,6 +1904,7 @@ class FfiModel with ChangeNotifier {
 
   Display evtToDisplay(Map<String, dynamic> evt) {
     var d = Display();
+    d.name = evt['name']?.toString() ?? '';
     d.x = evt['x']?.toDouble() ?? d.x;
     d.y = evt['y']?.toDouble() ?? d.y;
     d.width = evt['width'] ?? d.width;
@@ -4419,6 +4434,7 @@ const kInvalidResolutionValue = -1;
 const kVirtualDisplayResolutionValue = 0;
 
 class Display {
+  String name = '';
   double x = 0;
   double y = 0;
   int width = 0;
@@ -4445,6 +4461,7 @@ class Display {
       _innerEqual(other);
 
   bool _innerEqual(Display other) =>
+      other.name == name &&
       other.x == x &&
       other.y == y &&
       other.width == width &&
@@ -4460,6 +4477,14 @@ class Display {
   bool get isOriginalResolution =>
       width == (originalWidth * scale).round() &&
       height == (originalHeight * scale).round();
+
+  RemoteDisplayIdentity get remoteIdentity => RemoteDisplayIdentity(
+        name: name,
+        x: x.round(),
+        y: y.round(),
+        width: width,
+        height: height,
+      );
 }
 
 class Resolution {

@@ -601,15 +601,17 @@ impl FlutterHandler {
     fn make_displays_msg(displays: &Vec<DisplayInfo>) -> String {
         let mut msg_vec = Vec::new();
         for ref d in displays.iter() {
-            let mut h: HashMap<&str, i32> = Default::default();
-            h.insert("x", d.x);
-            h.insert("y", d.y);
-            h.insert("width", d.width);
-            h.insert("height", d.height);
-            h.insert("cursor_embedded", if d.cursor_embedded { 1 } else { 0 });
+            let mut h = json!({
+                "x": d.x,
+                "y": d.y,
+                "width": d.width,
+                "height": d.height,
+                "name": d.name,
+                "cursor_embedded": if d.cursor_embedded { 1 } else { 0 },
+            });
             if let Some(original_resolution) = d.original_resolution.as_ref() {
-                h.insert("original_width", original_resolution.width);
-                h.insert("original_height", original_resolution.height);
+                h["original_width"] = json!(original_resolution.width);
+                h["original_height"] = json!(original_resolution.height);
             }
             // Don't convert scale (x 100) to i32 directly.
             // (d.scale * 100.0f64) as i32 may produces inaccuracies.
@@ -625,7 +627,7 @@ impl FlutterHandler {
             // Send scaled_width for accurate logical scale calculation.
             if d.scale > 0.0 {
                 let scaled_width = (d.width as f64 / d.scale).round() as i32;
-                h.insert("scaled_width", scaled_width);
+                h["scaled_width"] = json!(scaled_width);
             }
             msg_vec.push(h);
         }
@@ -672,7 +674,8 @@ impl InvokeUiSession for FlutterHandler {
     }
 
     /// unused in flutter, use switch_display or set_peer_info
-    fn set_display(&self, _x: i32, _y: i32, _w: i32, _h: i32, _cursor_embedded: bool, _scale: f64) {}
+    fn set_display(&self, _x: i32, _y: i32, _w: i32, _h: i32, _cursor_embedded: bool, _scale: f64) {
+    }
 
     fn update_privacy_mode(&self) {
         self.push_event::<&str>("update_privacy_mode", &[], &[]);
@@ -712,8 +715,7 @@ impl InvokeUiSession for FlutterHandler {
                 ),
                 (
                     "resolutions",
-                    &serde_json::ser::to_string(&status.resolutions)
-                        .unwrap_or(NULL.to_owned()),
+                    &serde_json::ser::to_string(&status.resolutions).unwrap_or(NULL.to_owned()),
                 ),
             ],
             &[],

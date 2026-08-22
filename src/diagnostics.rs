@@ -265,16 +265,14 @@ fn power_profile_loop() {
             Some(disk.total_written_bytes),
         );
         #[cfg(any(target_os = "android", target_os = "macos"))]
-        let (read_bytes_interval, written_bytes_interval, read_bytes_total, written_bytes_total) = (
-            None::<u64>,
-            None::<u64>,
-            None::<u64>,
-            None::<u64>,
-        );
+        let (read_bytes_interval, written_bytes_interval, read_bytes_total, written_bytes_total) =
+            (None::<u64>, None::<u64>, None::<u64>, None::<u64>);
         #[cfg(target_os = "android")]
         let process_uptime_seconds = None::<u64>;
         #[cfg(not(target_os = "android"))]
         let process_uptime_seconds = Some(process.run_time());
+        let (http_client_builds_interval, http_client_cache_hits_interval) =
+            crate::hbbs_http::take_http_client_profile_counts();
         let fields = json!({
             "role": process_role(),
             "cpu_percent": cpu_percent,
@@ -287,6 +285,8 @@ fn power_profile_loop() {
             "process_uptime_seconds": process_uptime_seconds,
             "logical_cpu_count": std::thread::available_parallelism().map(|count| count.get()).unwrap_or(1),
             "incoming_session_count": crate::ui_cm_interface::get_clients_length(),
+            "http_client_builds_interval": http_client_builds_interval,
+            "http_client_cache_hits_interval": http_client_cache_hits_interval,
             "profiling_source": Config::get_option(POWER_PROFILING_SOURCE_OPTION),
             "build_fork": option_env!("RUSTDESK_BUILD_FORK").unwrap_or("local"),
             "build_commit": option_env!("RUSTDESK_BUILD_COMMIT").or(option_env!("GITHUB_SHA")).unwrap_or("local"),

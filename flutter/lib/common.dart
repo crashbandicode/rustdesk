@@ -9,6 +9,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_hbb/common/formatter/id_formatter.dart';
 import 'package:flutter_hbb/common/platform_icon.dart';
+import 'package:flutter_hbb/common/remembered_display.dart';
 import 'package:flutter_hbb/desktop/widgets/refresh_wrapper.dart';
 import 'package:flutter_hbb/desktop/widgets/tabbar_widget.dart';
 import 'package:flutter_hbb/main.dart';
@@ -3399,6 +3400,13 @@ openMonitorInTheSameTab(int i, FFI ffi, PeerInfo pi,
     ffi.ffiModel.lastUserDisplay = i;
     ffi.ffiModel.cancelPendingRestoreTimer();
     ffi.ffiModel.pendingMonitorRestore = null;
+    final identity =
+        i >= 0 && i < pi.displays.length ? pi.displays[i].remoteIdentity : null;
+    bind.mainSetPeerFlutterOptionSync(
+      id: ffi.id,
+      k: kPeerFlutterOptionRememberedDisplay,
+      v: RememberedRemoteDisplay(index: i, identity: identity).encode(),
+    );
   }
   final displays = i == kAllDisplayValue
       ? List.generate(pi.displays.length, (index) => index)

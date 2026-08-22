@@ -11,6 +11,15 @@ use hbb_common::{
     ResultType,
 };
 use reqwest::{blocking::Client as SyncClient, Client as AsyncClient};
+use std::sync::{
+    atomic::{AtomicU64, Ordering},
+    OnceLock,
+};
+
+static DEFAULT_SYNC_RUSTLS_CLIENT: OnceLock<SyncClient> = OnceLock::new();
+static DEFAULT_ASYNC_RUSTLS_CLIENT: OnceLock<AsyncClient> = OnceLock::new();
+static HTTP_CLIENT_BUILDS: AtomicU64 = AtomicU64::new(0);
+static HTTP_CLIENT_CACHE_HITS: AtomicU64 = AtomicU64::new(0);
 
 macro_rules! configure_http_client {
     ($builder:expr, $tls_type:expr, $danger_accept_invalid_cert:expr, $Client: ty) => {{
@@ -98,17 +107,71 @@ macro_rules! configure_http_client {
     }};
 }
 
-pub fn create_http_client(tls_type: TlsType, danger_accept_invalid_cert: bool) -> SyncClient {
+fn build_http_client(tls_type: TlsType, danger_accept_invalid_cert: bool) -> SyncClient {
+    HTTP_CLIENT_BUILDS.fetch_add(1, Ordering::Relaxed);
     let builder = SyncClient::builder();
     configure_http_client!(builder, tls_type, danger_accept_invalid_cert, SyncClient)
+}
+
+fn build_http_client_async(tls_type: TlsType, danger_accept_invalid_cert: bool) -> AsyncClient {
+    HTTP_CLIENT_BUILDS.fetch_add(1, Ordering::Relaxed);
+    let builder = AsyncClient::builder();
+    configure_http_client!(builder, tls_type, danger_accept_invalid_cert, AsyncClient)
+}
+
+#[inline]
+fn can_reuse_default_rustls_client(tls_type: TlsType, danger_accept_invalid_cert: bool) -> bool {
+    is_default_rustls_cacheable(
+        tls_type,
+        danger_accept_invalid_cert,
+        Config::get_socks().is_some(),
+    )
+}
+
+#[inline]
+fn is_default_rustls_cacheable(
+    tls_type: TlsType,
+    danger_accept_invalid_cert: bool,
+    has_proxy: bool,
+) -> bool {
+    matches!(tls_type, TlsType::Rustls) && !danger_accept_invalid_cert && !has_proxy
+}
+
+pub fn create_http_client(tls_type: TlsType, danger_accept_invalid_cert: bool) -> SyncClient {
+    if can_reuse_default_rustls_client(tls_type, danger_accept_invalid_cert) {
+        if let Some(client) = DEFAULT_SYNC_RUSTLS_CLIENT.get() {
+            HTTP_CLIENT_CACHE_HITS.fetch_add(1, Ordering::Relaxed);
+            return client.clone();
+        }
+        return DEFAULT_SYNC_RUSTLS_CLIENT
+            .get_or_init(|| build_http_client(tls_type, danger_accept_invalid_cert))
+            .clone();
+    }
+    build_http_client(tls_type, danger_accept_invalid_cert)
 }
 
 pub fn create_http_client_async(
     tls_type: TlsType,
     danger_accept_invalid_cert: bool,
 ) -> AsyncClient {
-    let builder = AsyncClient::builder();
-    configure_http_client!(builder, tls_type, danger_accept_invalid_cert, AsyncClient)
+    if can_reuse_default_rustls_client(tls_type, danger_accept_invalid_cert) {
+        if let Some(client) = DEFAULT_ASYNC_RUSTLS_CLIENT.get() {
+            HTTP_CLIENT_CACHE_HITS.fetch_add(1, Ordering::Relaxed);
+            return client.clone();
+        }
+        return DEFAULT_ASYNC_RUSTLS_CLIENT
+            .get_or_init(|| build_http_client_async(tls_type, danger_accept_invalid_cert))
+            .clone();
+    }
+    build_http_client_async(tls_type, danger_accept_invalid_cert)
+}
+
+#[cfg(any(target_os = "android", target_os = "ios", feature = "flutter"))]
+pub(crate) fn take_http_client_profile_counts() -> (u64, u64) {
+    (
+        HTTP_CLIENT_BUILDS.swap(0, Ordering::Relaxed),
+        HTTP_CLIENT_CACHE_HITS.swap(0, Ordering::Relaxed),
+    )
 }
 
 pub fn get_url_for_tls<'a>(url: &'a str, proxy_conf: &'a Option<Socks5Server>) -> &'a str {
@@ -388,4 +451,22 @@ async fn create_http_client_async_with_url_(
         );
     }
     client
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn only_safe_direct_rustls_clients_are_cacheable() {
+        assert!(is_default_rustls_cacheable(TlsType::Rustls, false, false));
+        assert!(!is_default_rustls_cacheable(TlsType::Rustls, true, false));
+        assert!(!is_default_rustls_cacheable(TlsType::Rustls, false, true));
+        assert!(!is_default_rustls_cacheable(
+            TlsType::NativeTls,
+            false,
+            false
+        ));
+        assert!(!is_default_rustls_cacheable(TlsType::Plain, false, false));
+    }
 }
