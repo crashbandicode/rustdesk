@@ -1188,6 +1188,18 @@ class FfiModel with ChangeNotifier {
   bool beginMobileResumeRecovery() {
     final target = parent.target;
     if (target == null || target.closed) return false;
+    if (shouldCoalesceMobileResumeRecovery(
+      reconnectScheduled: _transientNetworkReconnectTimer != null,
+      reconnectAttemptActive: _transientNetworkReconnectAttemptTimer != null,
+    )) {
+      unawaited(DiagnosticSupport.event('mobile_resume_reconnect_coalesced', {
+        'session_id': sessionId.toString(),
+        'peer_id': target.id,
+        'scheduled': _transientNetworkReconnectTimer != null,
+        'attempt_active': _transientNetworkReconnectAttemptTimer != null,
+      }));
+      return true;
+    }
     _transientNetworkReconnectPending = true;
     _transientNetworkReconnectStartTime ??= DateTime.now();
     return _dispatchTransientNetworkReconnect(

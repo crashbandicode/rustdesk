@@ -258,6 +258,7 @@ jobs:
           dart analyze --no-fatal-warnings lib/main.dart
           flutter test test/api_response_test.dart
           flutter test test/peer_metadata_test.dart
+          flutter test test/connection_policy_test.dart
           flutter test test/mobile_tab_lifecycle_test.dart
           flutter test test/remembered_display_test.dart
           Pop-Location
@@ -475,6 +476,7 @@ jobs:
           dart analyze --no-fatal-warnings lib/main.dart
           flutter test test/api_response_test.dart
           flutter test test/peer_metadata_test.dart
+          flutter test test/connection_policy_test.dart
           flutter test test/mobile_tab_lifecycle_test.dart
           flutter test test/remembered_display_test.dart
           popd

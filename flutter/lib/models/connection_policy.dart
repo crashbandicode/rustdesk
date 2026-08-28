@@ -5,6 +5,15 @@ const Duration kTransientNetworkReconnectAttemptTimeout =
 const Duration kTransientNetworkFirstFrameTimeout = Duration(seconds: 8);
 const Duration kMobileResumeFrameProbeTimeout = Duration(seconds: 3);
 
+/// A resume frame probe and a transport-error retry can fire independently.
+/// Once either path has scheduled or dispatched a reconnect, the other path
+/// must supervise that same attempt instead of starting a second native round.
+bool shouldCoalesceMobileResumeRecovery({
+  required bool reconnectScheduled,
+  required bool reconnectAttemptActive,
+}) =>
+    reconnectScheduled || reconnectAttemptActive;
+
 /// Returns true for transport failures that commonly occur while Android is
 /// backgrounded or while its network/DNS service is being restored.
 bool isTransientMobileNetworkError({

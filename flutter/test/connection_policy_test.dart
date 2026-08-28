@@ -2,6 +2,38 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:flutter_hbb/models/connection_policy.dart';
 
 void main() {
+  group('shouldCoalesceMobileResumeRecovery', () {
+    test('coalesces with a reconnect waiting for its backoff timer', () {
+      expect(
+        shouldCoalesceMobileResumeRecovery(
+          reconnectScheduled: true,
+          reconnectAttemptActive: false,
+        ),
+        isTrue,
+      );
+    });
+
+    test('coalesces with a reconnect already in flight', () {
+      expect(
+        shouldCoalesceMobileResumeRecovery(
+          reconnectScheduled: false,
+          reconnectAttemptActive: true,
+        ),
+        isTrue,
+      );
+    });
+
+    test('dispatches when no recovery path owns the session', () {
+      expect(
+        shouldCoalesceMobileResumeRecovery(
+          reconnectScheduled: false,
+          reconnectAttemptActive: false,
+        ),
+        isFalse,
+      );
+    });
+  });
+
   group('isTransientMobileNetworkError', () {
     test('recognizes the Android resume DNS failure', () {
       expect(
