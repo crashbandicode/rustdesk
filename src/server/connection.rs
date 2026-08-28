@@ -172,6 +172,7 @@ pub struct ConnInner {
     tx_video: Option<Sender>,
 }
 
+#[derive(Clone)]
 struct InputMouse {
     msg: MouseEvent,
     conn_id: i32,
@@ -262,6 +263,82 @@ impl RemotePressedKeys {
     }
 }
 
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
+#[derive(Default)]
+struct RemotePressedMouseButtons {
+    // Mouse state is global at the OS boundary but originates from one remote
+    // connection. Remember only buttons this connection pressed so its input
+    // thread can release an interrupted drag before a replacement connection
+    // starts sending input.
+    buttons: Vec<((i32, i32), InputMouse)>,
+}
+
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
+impl RemotePressedMouseButtons {
+    fn button_id(input: &InputMouse) -> Option<(i32, i32)> {
+        use crate::common::input::{
+            MOUSE_BUTTON_BACK, MOUSE_BUTTON_FORWARD, MOUSE_BUTTON_LEFT, MOUSE_BUTTON_RIGHT,
+            MOUSE_BUTTON_WHEEL,
+        };
+
+        let button = input.msg.mask >> 3;
+        match button {
+            MOUSE_BUTTON_LEFT | MOUSE_BUTTON_RIGHT | MOUSE_BUTTON_WHEEL | MOUSE_BUTTON_BACK
+            | MOUSE_BUTTON_FORWARD => Some((input.conn_id, button)),
+            _ => None,
+        }
+    }
+
+    fn observe_and_should_forward(&mut self, input: &InputMouse) -> bool {
+        use crate::common::input::{MOUSE_TYPE_DOWN, MOUSE_TYPE_MASK, MOUSE_TYPE_UP};
+
+        let Some(id) = Self::button_id(input) else {
+            return true;
+        };
+        match input.msg.mask & MOUSE_TYPE_MASK {
+            MOUSE_TYPE_DOWN => {
+                if let Some((_, stored)) = self
+                    .buttons
+                    .iter_mut()
+                    .find(|(stored_id, _)| *stored_id == id)
+                {
+                    *stored = input.clone();
+                } else {
+                    self.buttons.push((id, input.clone()));
+                }
+                true
+            }
+            MOUSE_TYPE_UP => {
+                if let Some(index) = self
+                    .buttons
+                    .iter()
+                    .position(|(stored_id, _)| *stored_id == id)
+                {
+                    self.buttons.remove(index);
+                    true
+                } else {
+                    false
+                }
+            }
+            _ => true,
+        }
+    }
+
+    fn take_releases(&mut self) -> Vec<InputMouse> {
+        use crate::common::input::MOUSE_TYPE_UP;
+
+        self.buttons
+            .drain(..)
+            .rev()
+            .map(|((_, button), mut input)| {
+                input.msg.mask = (button << 3) | MOUSE_TYPE_UP;
+                input.msg.modifiers.clear();
+                input
+            })
+            .collect()
+    }
+}
+
 #[cfg(all(test, not(any(target_os = "android", target_os = "ios"))))]
 mod remote_pressed_keys_tests {
     use super::*;
@@ -346,6 +423,73 @@ mod remote_pressed_keys_tests {
         keys.observe(&event, false);
 
         assert!(keys.take_releases().is_empty());
+    }
+}
+
+#[cfg(all(test, not(any(target_os = "android", target_os = "ios"))))]
+mod remote_pressed_mouse_buttons_tests {
+    use super::*;
+    use crate::common::input::{
+        MOUSE_BUTTON_LEFT, MOUSE_BUTTON_RIGHT, MOUSE_TYPE_DOWN, MOUSE_TYPE_MOVE, MOUSE_TYPE_UP,
+    };
+
+    fn mouse(conn_id: i32, button: i32, event_type: i32) -> InputMouse {
+        InputMouse {
+            msg: MouseEvent {
+                mask: (button << 3) | event_type,
+                ..Default::default()
+            },
+            conn_id,
+            username: "tester".to_owned(),
+            argb: 0,
+            simulate: true,
+            show_cursor: false,
+        }
+    }
+
+    #[test]
+    fn matching_mouse_up_leaves_nothing_to_release() {
+        let mut buttons = RemotePressedMouseButtons::default();
+        assert!(buttons.observe_and_should_forward(&mouse(7, MOUSE_BUTTON_LEFT, MOUSE_TYPE_DOWN)));
+        assert!(buttons.observe_and_should_forward(&mouse(7, MOUSE_BUTTON_LEFT, MOUSE_TYPE_UP)));
+
+        assert!(buttons.take_releases().is_empty());
+    }
+
+    #[test]
+    fn orphan_mouse_up_is_not_forwarded() {
+        let mut buttons = RemotePressedMouseButtons::default();
+
+        assert!(!buttons.observe_and_should_forward(&mouse(7, MOUSE_BUTTON_LEFT, MOUSE_TYPE_UP)));
+        assert!(buttons.take_releases().is_empty());
+    }
+
+    #[test]
+    fn releases_each_button_held_by_the_closing_connection() {
+        let mut buttons = RemotePressedMouseButtons::default();
+        assert!(buttons.observe_and_should_forward(&mouse(7, MOUSE_BUTTON_LEFT, MOUSE_TYPE_DOWN)));
+        assert!(buttons.observe_and_should_forward(&mouse(7, MOUSE_BUTTON_RIGHT, MOUSE_TYPE_DOWN)));
+        assert!(buttons.observe_and_should_forward(&mouse(7, 0, MOUSE_TYPE_MOVE)));
+
+        let releases = buttons.take_releases();
+        assert_eq!(releases.len(), 2);
+        assert_eq!(
+            releases[0].msg.mask,
+            (MOUSE_BUTTON_RIGHT << 3) | MOUSE_TYPE_UP
+        );
+        assert_eq!(
+            releases[1].msg.mask,
+            (MOUSE_BUTTON_LEFT << 3) | MOUSE_TYPE_UP
+        );
+    }
+
+    #[test]
+    fn repeated_down_tracks_one_release_per_button() {
+        let mut buttons = RemotePressedMouseButtons::default();
+        assert!(buttons.observe_and_should_forward(&mouse(7, MOUSE_BUTTON_LEFT, MOUSE_TYPE_DOWN)));
+        assert!(buttons.observe_and_should_forward(&mouse(7, MOUSE_BUTTON_LEFT, MOUSE_TYPE_DOWN)));
+
+        assert_eq!(buttons.take_releases().len(), 1);
     }
 }
 
@@ -1320,6 +1464,7 @@ impl Connection {
     fn handle_input(receiver: std_mpsc::Receiver<MessageInput>, tx: Sender) {
         let mut block_input_mode = false;
         let mut pressed_keys = RemotePressedKeys::default();
+        let mut pressed_mouse_buttons = RemotePressedMouseButtons::default();
         #[cfg(any(target_os = "windows", target_os = "macos"))]
         {
             rdev::set_mouse_extra_info(enigo::ENIGO_INPUT_EXTRA_VALUE);
@@ -1331,14 +1476,21 @@ impl Connection {
             match receiver.recv_timeout(std::time::Duration::from_millis(500)) {
                 Ok(v) => match v {
                     MessageInput::Mouse(mouse_input) => {
-                        handle_mouse(
-                            &mouse_input.msg,
-                            mouse_input.conn_id,
-                            mouse_input.username,
-                            mouse_input.argb,
-                            mouse_input.simulate,
-                            mouse_input.show_cursor,
-                        );
+                        if pressed_mouse_buttons.observe_and_should_forward(&mouse_input) {
+                            handle_mouse(
+                                &mouse_input.msg,
+                                mouse_input.conn_id,
+                                mouse_input.username,
+                                mouse_input.argb,
+                                mouse_input.simulate,
+                                mouse_input.show_cursor,
+                            );
+                        } else {
+                            log::debug!(
+                                "Ignoring remote mouse button-up without a matching down from connection {}",
+                                mouse_input.conn_id
+                            );
+                        }
                     }
                     MessageInput::Key((mut msg, press)) => {
                         pressed_keys.observe(&msg, press);
@@ -1389,6 +1541,23 @@ impl Connection {
                         break;
                     }
                 }
+            }
+        }
+        let mouse_releases = pressed_mouse_buttons.take_releases();
+        if !mouse_releases.is_empty() {
+            log::info!(
+                "Releasing {} held remote mouse button(s) after input connection closed",
+                mouse_releases.len()
+            );
+            for release in mouse_releases {
+                handle_mouse(
+                    &release.msg,
+                    release.conn_id,
+                    release.username,
+                    release.argb,
+                    release.simulate,
+                    release.show_cursor,
+                );
             }
         }
         let releases = pressed_keys.take_releases();

@@ -3560,8 +3560,11 @@ fn activate_os(interface: &impl Interface, send_left_click: bool) {
     let left_up = MOUSE_BUTTON_LEFT << 3 | MOUSE_TYPE_UP;
     let right_down = MOUSE_BUTTON_RIGHT << 3 | MOUSE_TYPE_DOWN;
     let right_up = MOUSE_BUTTON_RIGHT << 3 | MOUSE_TYPE_UP;
-    send_mouse(left_up, 0, 0, false, false, false, false, interface);
-    std::thread::sleep(Duration::from_millis(50));
+    // Never emit a button-up without a matching button-down. On Windows an
+    // orphan release can activate the control currently under the cursor;
+    // reconnecting while the pointer is over a title-bar close button has
+    // therefore closed unrelated application windows. The controlled side
+    // releases buttons owned by an interrupted connection during teardown.
     send_mouse(0, 0, 0, false, false, false, false, interface);
     std::thread::sleep(Duration::from_millis(50));
     send_mouse(0, 3, 3, false, false, false, false, interface);

@@ -977,7 +977,7 @@ class FfiModel with ChangeNotifier {
       // title/text for legacy UI and translation reuse; Flutter keeps the last
       // frame briefly, then shows the Connecting overlay.
       if (_restartReconnectDelayTimer == null) {
-        parent.target?.inputModel.setRelativeMouseMode(false);
+        _releaseInputForReconnect('peer_restarting');
         _cancelPendingMonitorRestore();
         bind.sessionReconnect(sessionId: sessionId, forceRelay: false);
         clearPermissions();
@@ -1369,10 +1369,38 @@ class FfiModel with ChangeNotifier {
     _pendingRestoreTimer = null;
   }
 
+  void _releaseInputForReconnect(String reason) {
+    final target = parent.target;
+    final inputModel = target?.inputModel;
+    if (target == null || inputModel == null) {
+      return;
+    }
+
+    final hadCtrl = inputModel.ctrl;
+    final hadAlt = inputModel.alt;
+    final hadShift = inputModel.shift;
+    final hadCommand = inputModel.command;
+    final releasedKeyCount = inputModel.releaseAllPressedKeys();
+    inputModel.setRelativeMouseMode(false);
+    unawaited(DiagnosticSupport.event('reconnect_input_released', {
+      'session_id': sessionId.toString(),
+      'peer_id': target.id,
+      'reason': reason,
+      'released_key_count': releasedKeyCount,
+      'had_ctrl': hadCtrl,
+      'had_alt': hadAlt,
+      'had_shift': hadShift,
+      'had_command': hadCommand,
+    }));
+  }
+
   void reconnect(OverlayDialogManager dialogManager, SessionID sessionId,
       bool forceRelay) {
-    // Disable relative mouse mode before reconnecting to ensure cursor is released.
-    parent.target?.inputModel.setRelativeMouseMode(false);
+    // A reconnect can overlap the old and replacement native connections. End
+    // the client-side input epoch first so a modifier or ordinary key cannot
+    // be inherited by the replacement connection and complete a shortcut on
+    // the controlled desktop.
+    _releaseInputForReconnect('reconnect');
     _cancelPendingMonitorRestore();
     bind.sessionReconnect(sessionId: sessionId, forceRelay: forceRelay);
     clearPermissions();
